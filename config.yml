@@ -13,7 +13,3 @@ sync:
     documents:
       - github_path: docs/Hello.md
         confluence_title: "Hello"
-      - github_path: docs/installation.md
-        confluence_title: "Installation Guide"
-      - github_path: docs/api-reference.md
-        confluence_title: "API Reference"
