@@ -6,13 +6,13 @@ confluence:
 # One or more sync blocks.  Each block defines a GitHub source and the
 # Confluence destination for a set of documents.
 sync:
-  - github_repo: https://github.com/Pinakin-Desai-HBK/docs-github-confluence
-    github_branch: main                    # branch to read documents from
-    confluence_space: DOC                  # Confluence space key
-    confluence_parent_id: "123456"         # optional: ID of the parent page
+  - github_repo: Pinakin-Desai-HBK/docs-github-confluence
+    github_branch: main # branch to read documents from
+    confluence_space: DOC # Confluence space key
+    confluence_parent_id: "123456" # optional: ID of the parent page
     documents:
-      - github_path: docs/README.md
-        confluence_title: "Project Overview"
+      - github_path: docs/Hello.md
+        confluence_title: "Hello"
       - github_path: docs/installation.md
         confluence_title: "Installation Guide"
       - github_path: docs/api-reference.md

@@ -224,6 +224,15 @@ def sync_document(
         result = confluence.create_page(space_key, title, content, parent_id)
         logger.info("Created page '%s' (id=%s)", title, result["id"])
 
+def normalize_github_repo(repo: str) -> str:
+    repo = repo.strip()
+
+    # Accept full GitHub URLs like https://github.com/owner/name(.git)
+    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+
+    return repo
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -259,7 +268,7 @@ def main(config_path: str = "config.yml") -> None:
     confluence = ConfluenceClient(confluence_url, confluence_username, confluence_api_token)
 
     for sync_entry in config.get("sync", []):
-        github_repo = sync_entry["github_repo"]
+        github_repo = normalize_github_repo(sync_entry["github_repo"])
         github_branch = sync_entry.get("github_branch", "main")
         space_key = sync_entry["confluence_space"]
         parent_id = sync_entry.get("confluence_parent_id")
