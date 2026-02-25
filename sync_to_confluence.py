@@ -142,10 +142,11 @@ class ConfluenceClient:
 
     def __init__(self, base_url: str, username: str, api_token: str) -> None:
         self.base_url = base_url.rstrip("/")
-        self.auth = (username, api_token)
+        self.auth = None
         self.headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Authorization": f"Bearer {api_token}",
         }
 
     def get_page_by_title(self, space_key: str, title: str) -> Optional[dict]:
