@@ -1,12 +1,12 @@
 # Confluence connection settings (can also be supplied via environment variables)
 confluence:
-  url: https://your-domain.atlassian.net   # overridden by CONFLUENCE_URL env var
-  username: your-email@example.com          # overridden by CONFLUENCE_USERNAME env var
+  url: ${{ secrets.CONFLUENCE_URL }}
+  username: ${{ secrets.CONFLUENCE_USERNAME }}
 
 # One or more sync blocks.  Each block defines a GitHub source and the
 # Confluence destination for a set of documents.
 sync:
-  - github_repo: your-org/your-repo        # GitHub repository (owner/name)
+  - github_repo: https://github.com/Pinakin-Desai-HBK/docs-github-confluence
     github_branch: main                    # branch to read documents from
     confluence_space: DOC                  # Confluence space key
     confluence_parent_id: "123456"         # optional: ID of the parent page
