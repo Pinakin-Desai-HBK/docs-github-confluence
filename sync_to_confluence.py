@@ -153,9 +153,7 @@ class ConfluenceClient:
         """Return a page dict (including version) if *title* exists in *space_key*, else None."""
         url = f"{self.base_url}/rest/api/content"
         params = {"spaceKey": space_key, "title": title, "expand": "version"}
-        response = requests.get(
-            url, auth=self.auth, headers=self.headers, params=params, timeout=30
-        )
+        response = requests.get(url, headers=self.headers, params=params, timeout=30)
         response.raise_for_status()
         results = response.json().get("results", [])
         return results[0] if results else None
@@ -177,9 +175,7 @@ class ConfluenceClient:
         }
         if parent_id:
             body["ancestors"] = [{"id": parent_id}]
-        response = requests.post(
-            url, auth=self.auth, headers=self.headers, json=body, timeout=30
-        )
+        response = requests.post(url, headers=self.headers, json=body, timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -194,12 +190,9 @@ class ConfluenceClient:
             "version": {"number": current_version + 1},
             "body": {"storage": {"value": content, "representation": "storage"}},
         }
-        response = requests.put(
-            url, auth=self.auth, headers=self.headers, json=body, timeout=30
-        )
+        response = requests.put(url, headers=self.headers, json=body, timeout=30)
         response.raise_for_status()
         return response.json()
-
 
 # ---------------------------------------------------------------------------
 # Sync logic
