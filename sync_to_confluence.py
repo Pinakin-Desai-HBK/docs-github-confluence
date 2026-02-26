@@ -109,7 +109,7 @@ _MARKDOWN_IT = MarkdownIt(
 
 # Bleach allowlist – tags and attributes acceptable in Confluence storage XHTML.
 _BLEACH_ALLOWED_TAGS = frozenset([
-    "p", "br", "strong", "em", "s", "del", "code", "pre",
+    "p", "br", "hr", "strong", "em", "s", "del", "code", "pre",
     "a", "ul", "ol", "li",
     "h1", "h2", "h3", "h4", "h5", "h6",
     "table", "thead", "tbody", "tr", "th", "td",
