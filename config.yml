@@ -17,5 +17,5 @@ sync:
   - github_repo: Pinakin-Desai-HBK/docs-github-confluence
     github_branch: main # branch to read documents from
     confluence_space: ${{ secrets.CONFLUENCE_SPACE }} # Confluence space key
-    confluence_parent_id: ${{ secrets.CONFLUENCE_PARENT_ID }} # ID of the root landing page (required for docs_root)
+    confluence_parent_id: "405152300" # ID of the root landing page (required for docs_root)
     docs_root: Docs # mirror everything under Docs/ into Confluence
