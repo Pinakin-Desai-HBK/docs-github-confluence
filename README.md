@@ -30,13 +30,13 @@ Notes on `confluence_space`:
 
 #### Tree-sync mode (recommended)
 
-Set `docs_root` to the folder you want to mirror.  The script will discover all
+Set `docs_root` to the folder you want to mirror. The script will discover all
 Markdown files recursively and recreate the directory structure as Confluence pages
 nested under the page identified by `confluence_parent_id`.
 
-- Page titles are the **filename without extension** (e.g. `Installation.md` → *Installation*).
-- `README.md` is special: it updates the *folder page* itself rather than creating a
-  new child page.  `Docs/README.md` updates the root page identified by
+- Page titles are the **filename without extension** (e.g. `Installation.md` → _Installation_).
+- `README.md` is special: it updates the _folder page_ itself rather than creating a
+  new child page. `Docs/README.md` updates the root page identified by
   `confluence_parent_id`; `Docs/<folder>/README.md` updates the `<folder>` page.
 
 ```yaml
@@ -48,7 +48,7 @@ sync:
   - github_repo: your-org/your-repo
     github_branch: main
     confluence_space: DOC # or "~your-username" for a personal space (Data Center)
-    confluence_parent_id: "123456" # ID of the root landing page (required)
+    confluence_parent_id: "405152300" # ID of the root landing page (required)
     docs_root: Docs # mirror everything under Docs/ into Confluence
 ```
 
@@ -61,7 +61,7 @@ sync:
   - github_repo: your-org/your-repo
     github_branch: main
     confluence_space: DOC
-    confluence_parent_id: "123456" # optional parent page ID
+    confluence_parent_id: "405152300" # optional parent page ID
     documents:
       - github_path: docs/README.md
         confluence_title: "Project Overview"
