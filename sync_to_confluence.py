@@ -118,6 +118,31 @@ def markdown_to_confluence(markdown_content: str) -> str:
 
     content = re.sub(r"```(\w+)?\n(.*?)```", replace_code_block, content, flags=re.DOTALL)
 
+    # Normalize HTML line-break tags to self-closing XHTML form required by
+    # the Confluence storage-format parser (<br> → <br/>).  Skip content
+    # inside CDATA sections (fenced code blocks) so code examples are
+    # preserved verbatim.
+    _br_pattern = re.compile(r"<[Bb][Rr]\s*/?>")
+    parts = re.split(r"(<!\[CDATA\[.*?\]\]>)", content, flags=re.DOTALL)
+    content = "".join(
+        part if part.startswith("<![CDATA[") else _br_pattern.sub("<br/>", part)
+        for part in parts
+    )
+
+    # Escape raw HTML/XML tags present in the Markdown input so they do not
+    # reach Confluence as real tags (which causes XHTML parse errors).
+    # Already-generated segments — code macros and normalised <br/> — are
+    # protected from escaping by splitting them out first.
+    _protect_pattern = re.compile(
+        r"(<ac:structured-macro.*?</ac:structured-macro>|<br/>)",
+        re.DOTALL,
+    )
+    parts = _protect_pattern.split(content)
+    content = "".join(
+        part if i % 2 == 1 else part.replace("<", "&lt;").replace(">", "&gt;")
+        for i, part in enumerate(parts)
+    )
+
     # Headings (h6 → h1, processed largest-first to avoid double substitution)
     for level in range(6, 0, -1):
         content = re.sub(
@@ -141,17 +166,6 @@ def markdown_to_confluence(markdown_content: str) -> str:
 
     # Inline code
     content = re.sub(r"`(.+?)`", r"<code>\1</code>", content)
-
-    # Normalize HTML line-break tags to self-closing XHTML form required by
-    # the Confluence storage-format parser (<br> → <br/>).  Skip content
-    # inside CDATA sections (fenced code blocks) so code examples are
-    # preserved verbatim.
-    _br_pattern = re.compile(r"<[Bb][Rr]\s*/?>")
-    parts = re.split(r"(<!\[CDATA\[.*?\]\]>)", content, flags=re.DOTALL)
-    content = "".join(
-        part if part.startswith("<![CDATA[") else _br_pattern.sub("<br/>", part)
-        for part in parts
-    )
 
     # Links
     content = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', content)
