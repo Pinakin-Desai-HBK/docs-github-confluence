@@ -1,13 +1,20 @@
 name: Sync GitHub Docs to Confluence
 
 on:
-  # Run whenever there's a merge into main
+  # Run whenever there's a push to main that touches Docs/ or config
   push:
     branches:
       - main
+    paths:
+      - "Docs/**"
+      - "config.yml"
 
   # Allow ad-hoc runs from the Actions tab
   workflow_dispatch:
+
+  # Scheduled run every 6 hours
+  schedule:
+    - cron: "0 */6 * * *"
 
 jobs:
   sync:
