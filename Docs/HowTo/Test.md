@@ -1,6 +1,6 @@
 ## Markdown Markup Showcase
 
-This page demonstrates many different types of **Markdown** markup that can be synced between GitHub and Confluence.
+This page demonstrates many different types of **Markdown** markup that can be synced between GitHub and Confluencex.
 
 ---
 
