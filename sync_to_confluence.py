@@ -17,9 +17,10 @@ from typing import Optional
 import bleach
 import requests
 import yaml
-from lxml import etree
+from lxml import etree, html  # ensure html is imported
 from markdown_it import MarkdownIt
 from mdit_py_plugins.tasklists import tasklists_plugin
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,7 +178,7 @@ def markdown_to_confluence(markdown_content: str) -> str:
     )
 
     # Step 5 – normalize to well-formed XHTML (self-closing void elements, etc.).
-    root = etree.fromstring(f"<div>{cleaned}</div>")
+    root = html.fragment_fromstring(cleaned, create_parent=True)  # creates a <div> parent
     serialized = etree.tostring(root, encoding="unicode", method="xml")
     result = serialized[5:-6]  # strip outer <div>…</div>
 
