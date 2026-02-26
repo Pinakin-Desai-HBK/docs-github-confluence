@@ -167,6 +167,8 @@ class TestConfluenceClient(unittest.TestCase):
     def _mock_response(self, data: dict, status: int = 200) -> MagicMock:
         mock_resp = MagicMock()
         mock_resp.json.return_value = data
+        mock_resp.status_code = status
+        mock_resp.headers = {"Content-Type": "application/json"}
         mock_resp.raise_for_status = MagicMock()
         return mock_resp
 
@@ -222,6 +224,91 @@ class TestConfluenceClient(unittest.TestCase):
         with self.assertRaises(Exception):
             self.client.get_page_by_title("DOC", "Page")
 
+    # ------------------------------------------------------------------
+    # _parse_json_response — non-JSON / SSO HTML response handling
+    # ------------------------------------------------------------------
+
+    def _make_html_response(self, status: int = 200) -> MagicMock:
+        """Simulate an SSO login page returned with text/html Content-Type."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = status
+        mock_resp.headers = {"Content-Type": "text/html;charset=UTF-8"}
+        mock_resp.text = "<html><body>Please log in</body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_html_response_raises_valueerror(self, mock_get):
+        mock_get.return_value = self._make_html_response()
+        with self.assertRaises(ValueError) as ctx:
+            self.client.get_page_by_title("DOC", "Page")
+        msg = str(ctx.exception)
+        self.assertIn("non-JSON", msg)
+        self.assertIn("text/html", msg)
+        self.assertNotIn("Authorization", msg)
+        self.assertNotIn("Bearer", msg)
+
+    @patch("sync_to_confluence.requests.post")
+    def test_create_page_html_response_raises_valueerror(self, mock_post):
+        mock_post.return_value = self._make_html_response()
+        with self.assertRaises(ValueError) as ctx:
+            self.client.create_page("DOC", "New Page", "<p>x</p>")
+        msg = str(ctx.exception)
+        self.assertIn("non-JSON", msg)
+        self.assertIn("text/html", msg)
+
+    @patch("sync_to_confluence.requests.put")
+    def test_update_page_html_response_raises_valueerror(self, mock_put):
+        mock_put.return_value = self._make_html_response()
+        with self.assertRaises(ValueError) as ctx:
+            self.client.update_page("42", "Title", "<p>x</p>", 1)
+        msg = str(ctx.exception)
+        self.assertIn("non-JSON", msg)
+        self.assertIn("text/html", msg)
+
+    def test_parse_json_response_valid_json(self):
+        """Valid JSON responses are returned without error."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "application/json;charset=UTF-8"}
+        mock_resp.json.return_value = {"results": [{"id": "1"}]}
+        result = self.client._parse_json_response(mock_resp, "GET", "http://example.com")
+        self.assertEqual(result["results"][0]["id"], "1")
+
+    def test_parse_json_response_invalid_json_raises_valueerror(self):
+        """application/json Content-Type but malformed body raises ValueError."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_resp.text = "not-json"
+        mock_resp.json.side_effect = ValueError("No JSON")
+        with self.assertRaises(ValueError) as ctx:
+            self.client._parse_json_response(mock_resp, "GET", "http://example.com")
+        self.assertIn("invalid JSON", str(ctx.exception))
+
+    def test_parse_json_response_error_includes_body_prefix(self):
+        """Error message includes a prefix of the response body."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.text = "<html>" + "x" * 600
+        with self.assertRaises(ValueError) as ctx:
+            self.client._parse_json_response(mock_resp, "GET", "http://example.com")
+        msg = str(ctx.exception)
+        # Body prefix capped at 500 chars — the 600-char padding should NOT appear in full
+        self.assertIn("<html>", msg)
+        self.assertNotIn("x" * 501, msg)
+
+    def test_parse_json_response_no_auth_in_error(self):
+        """Authorization header value must not appear in the error message."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.text = "<html>login</html>"
+        with self.assertRaises(ValueError) as ctx:
+            self.client._parse_json_response(mock_resp, "GET", "http://example.com")
+        # The Bearer token stored in self.client.headers must not leak
+        self.assertNotIn("apitoken", str(ctx.exception))
 
 # ---------------------------------------------------------------------------
 # sync_document

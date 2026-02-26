@@ -149,13 +149,41 @@ class ConfluenceClient:
             "Authorization": f"Bearer {api_token}",
         }
 
+    def _parse_json_response(self, response: requests.Response, method: str, url: str) -> dict:
+        """Parse a Confluence API response as JSON.
+
+        Raises a descriptive :class:`ValueError` when the response body is not
+        JSON (e.g. an HTML SSO/login page) so callers see a clear, actionable
+        message instead of a bare ``JSONDecodeError``.  Authorization headers
+        and tokens are intentionally excluded from the log output.
+        """
+        content_type = response.headers.get("Content-Type", "")
+        body_prefix = response.text[:500]
+        if "application/json" not in content_type:
+            raise ValueError(
+                f"Confluence returned a non-JSON response "
+                f"[{method} {url} -> HTTP {response.status_code}, "
+                f"Content-Type: {content_type!r}]. "
+                f"Body prefix: {body_prefix!r}. "
+                f"This may indicate an SSO/login redirect — check CONFLUENCE_URL and credentials."
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ValueError(
+                f"Confluence returned invalid JSON "
+                f"[{method} {url} -> HTTP {response.status_code}, "
+                f"Content-Type: {content_type!r}]. "
+                f"Body prefix: {body_prefix!r}."
+            ) from exc
+
     def get_page_by_title(self, space_key: str, title: str) -> Optional[dict]:
         """Return a page dict (including version) if *title* exists in *space_key*, else None."""
         url = f"{self.base_url}/rest/api/content"
         params = {"spaceKey": space_key, "title": title, "expand": "version"}
         response = requests.get(url, headers=self.headers, params=params, timeout=30)
         response.raise_for_status()
-        results = response.json().get("results", [])
+        results = self._parse_json_response(response, "GET", url).get("results", [])
         return results[0] if results else None
 
     def create_page(
@@ -177,7 +205,7 @@ class ConfluenceClient:
             body["ancestors"] = [{"id": parent_id}]
         response = requests.post(url, headers=self.headers, json=body, timeout=30)
         response.raise_for_status()
-        return response.json()
+        return self._parse_json_response(response, "POST", url)
 
     def update_page(
         self, page_id: str, title: str, content: str, current_version: int
@@ -192,7 +220,7 @@ class ConfluenceClient:
         }
         response = requests.put(url, headers=self.headers, json=body, timeout=30)
         response.raise_for_status()
-        return response.json()
+        return self._parse_json_response(response, "PUT", url)
 
 # ---------------------------------------------------------------------------
 # Sync logic
