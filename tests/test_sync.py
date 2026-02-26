@@ -120,6 +120,23 @@ class TestMarkdownToConfluence(unittest.TestCase):
         result = markdown_to_confluence("_italic_")
         self.assertIn("<em>italic</em>", result)
 
+    def test_bold_italic_asterisks(self):
+        result = markdown_to_confluence("***Bold and italic text***")
+        self.assertIn("<strong><em>Bold and italic text</em></strong>", result)
+        # Must not contain mis-nested close tags
+        self.assertNotIn("</strong></em>", result)
+
+    def test_bold_italic_underscores(self):
+        result = markdown_to_confluence("___Bold and italic text___")
+        self.assertIn("<strong><em>Bold and italic text</em></strong>", result)
+        self.assertNotIn("</strong></em>", result)
+
+    def test_bold_italic_list_item(self):
+        md = "- ***Bold and italic text***\n"
+        result = markdown_to_confluence(md)
+        self.assertIn("<li><strong><em>Bold and italic text</em></strong></li>", result)
+        self.assertNotIn("</strong></em>", result)
+
     def test_inline_code(self):
         result = markdown_to_confluence("`code`")
         self.assertIn("<code>code</code>", result)
