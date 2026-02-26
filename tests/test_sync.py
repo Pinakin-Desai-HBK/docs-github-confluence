@@ -122,20 +122,17 @@ class TestMarkdownToConfluence(unittest.TestCase):
 
     def test_bold_italic_asterisks(self):
         result = markdown_to_confluence("***Bold and italic text***")
-        self.assertIn("<strong><em>Bold and italic text</em></strong>", result)
-        # Must not contain mis-nested close tags
-        self.assertNotIn("</strong></em>", result)
+        # CommonMark: outer * → <em>, inner ** → <strong>
+        self.assertIn("<em><strong>Bold and italic text</strong></em>", result)
 
     def test_bold_italic_underscores(self):
         result = markdown_to_confluence("___Bold and italic text___")
-        self.assertIn("<strong><em>Bold and italic text</em></strong>", result)
-        self.assertNotIn("</strong></em>", result)
+        self.assertIn("<em><strong>Bold and italic text</strong></em>", result)
 
     def test_bold_italic_list_item(self):
         md = "- ***Bold and italic text***\n"
         result = markdown_to_confluence(md)
-        self.assertIn("<li><strong><em>Bold and italic text</em></strong></li>", result)
-        self.assertNotIn("</strong></em>", result)
+        self.assertIn("<li><em><strong>Bold and italic text</strong></em></li>", result)
 
     def test_inline_code(self):
         result = markdown_to_confluence("`code`")
@@ -228,6 +225,54 @@ class TestMarkdownToConfluence(unittest.TestCase):
         self.assertIn("Line 1<br/>Line 2", result)
         self.assertNotIn("<br>", result)
         self.assertNotIn("&lt;br", result)
+
+
+# ---------------------------------------------------------------------------
+# GFM-ish extensions: tables, task lists, strikethrough
+# ---------------------------------------------------------------------------
+
+class TestMarkdownToConfluenceGFM(unittest.TestCase):
+    """Validate GFM-ish features added by the markdown-it-py pipeline."""
+
+    def test_table_produces_table_structure(self):
+        md = "| Col1 | Col2 |\n|------|------|\n| a    | b    |\n"
+        result = markdown_to_confluence(md)
+        self.assertIn("<table>", result)
+        self.assertIn("<th>", result)
+        self.assertIn("<td>", result)
+        self.assertIn("Col1", result)
+        self.assertIn("a", result)
+
+    def test_task_list_preserves_list_structure(self):
+        md = "- [ ] todo item\n- [x] done item\n"
+        result = markdown_to_confluence(md)
+        self.assertIn("<ul>", result)
+        self.assertIn("<li>", result)
+        self.assertIn("todo item", result)
+        self.assertIn("done item", result)
+
+    def test_strikethrough_produces_s_tag(self):
+        result = markdown_to_confluence("~~strikethrough~~")
+        self.assertIn("<s>", result)
+        self.assertIn("strikethrough", result)
+
+    def test_output_is_well_formed_xml(self):
+        """The output must be parseable as XML (well-formed XHTML)."""
+        import xml.etree.ElementTree as ET
+        md = (
+            "# Heading\n\n"
+            "Some **bold** and ~~strike~~.\n\n"
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+            "- [ ] task\n- [x] done\n"
+        )
+        result = markdown_to_confluence(md)
+        # Wrap in a root element so ET can parse multiple top-level nodes.
+        ET.fromstring(f"<root>{result}</root>")  # must not raise
+
+    def test_raw_xml_not_in_output_as_tag(self):
+        result = markdown_to_confluence("text <xml>payload</xml> text")
+        self.assertNotIn("<xml>", result)
+        self.assertIn("&lt;xml&gt;", result)
 
 
 # ---------------------------------------------------------------------------
