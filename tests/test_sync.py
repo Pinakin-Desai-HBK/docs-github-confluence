@@ -200,6 +200,35 @@ class TestMarkdownToConfluence(unittest.TestCase):
         self.assertIn("foo<br>bar", result)
         self.assertIn("<![CDATA[foo<br>bar", result)
 
+    def test_raw_xml_tags_are_escaped(self):
+        result = markdown_to_confluence("Here is xml: <xml><a>1</a></xml>")
+        self.assertIn("&lt;xml&gt;", result)
+        self.assertIn("&lt;/xml&gt;", result)
+        self.assertNotIn("<xml>", result)
+        self.assertNotIn("</xml>", result)
+
+    def test_raw_xml_tags_in_paragraph_are_escaped(self):
+        result = markdown_to_confluence("Here is xml: <xml><a>1</a></xml>")
+        self.assertIn("<p>Here is xml: &lt;xml&gt;&lt;a&gt;1&lt;/a&gt;&lt;/xml&gt;</p>", result)
+
+    def test_raw_html_does_not_produce_unbalanced_tags(self):
+        result = markdown_to_confluence("Some text <unknown> more text")
+        self.assertNotIn("<unknown>", result)
+        self.assertIn("&lt;unknown&gt;", result)
+
+    def test_raw_xml_in_code_block_is_preserved_verbatim(self):
+        md = "```xml\n<xml><a>1</a></xml>\n```"
+        result = markdown_to_confluence(md)
+        self.assertIn("ac:structured-macro", result)
+        self.assertIn("<xml><a>1</a></xml>", result)
+        self.assertNotIn("&lt;xml&gt;", result)
+
+    def test_br_normalization_still_works_after_escaping(self):
+        result = markdown_to_confluence("Line 1<br>Line 2")
+        self.assertIn("Line 1<br/>Line 2", result)
+        self.assertNotIn("<br>", result)
+        self.assertNotIn("&lt;br", result)
+
 
 # ---------------------------------------------------------------------------
 # ConfluenceClient
