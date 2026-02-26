@@ -174,6 +174,32 @@ class TestMarkdownToConfluence(unittest.TestCase):
         result = markdown_to_confluence("")
         self.assertIsInstance(result, str)
 
+    def test_br_tag_normalized_to_self_closing(self):
+        result = markdown_to_confluence("Line 1<br>Line 2")
+        self.assertIn("Line 1<br/>Line 2", result)
+        self.assertNotIn("<br>", result)
+
+    def test_br_tag_uppercase_normalized(self):
+        result = markdown_to_confluence("Line 1<BR>Line 2")
+        self.assertIn("Line 1<br/>Line 2", result)
+        self.assertNotIn("<BR>", result)
+
+    def test_br_tag_with_space_normalized(self):
+        result = markdown_to_confluence("Line 1<br >Line 2")
+        self.assertIn("Line 1<br/>Line 2", result)
+        self.assertNotIn("<br >", result)
+
+    def test_br_self_closing_preserved(self):
+        result = markdown_to_confluence("Line 1<br/>Line 2")
+        self.assertIn("Line 1<br/>Line 2", result)
+
+    def test_br_normalization_does_not_affect_code_macro(self):
+        md = "```python\nfoo<br>bar\n```"
+        result = markdown_to_confluence(md)
+        self.assertIn("ac:structured-macro", result)
+        self.assertIn("foo<br>bar", result)
+        self.assertIn("<![CDATA[foo<br>bar", result)
+
 
 # ---------------------------------------------------------------------------
 # ConfluenceClient

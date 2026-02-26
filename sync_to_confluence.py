@@ -142,6 +142,17 @@ def markdown_to_confluence(markdown_content: str) -> str:
     # Inline code
     content = re.sub(r"`(.+?)`", r"<code>\1</code>", content)
 
+    # Normalize HTML line-break tags to self-closing XHTML form required by
+    # the Confluence storage-format parser (<br> → <br/>).  Skip content
+    # inside CDATA sections (fenced code blocks) so code examples are
+    # preserved verbatim.
+    _br_pattern = re.compile(r"<[Bb][Rr]\s*/?>")
+    parts = re.split(r"(<!\[CDATA\[.*?\]\]>)", content, flags=re.DOTALL)
+    content = "".join(
+        part if part.startswith("<![CDATA[") else _br_pattern.sub("<br/>", part)
+        for part in parts
+    )
+
     # Links
     content = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', content)
 
