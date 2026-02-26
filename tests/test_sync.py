@@ -665,5 +665,103 @@ class TestSyncDocsTree(unittest.TestCase):
         self.assertEqual(update_args[3], 2)   # current version passed through
 
 
+# ---------------------------------------------------------------------------
+# sync_docs_tree — preflight validation
+# ---------------------------------------------------------------------------
+
+class TestSyncDocsTreePreflight(unittest.TestCase):
+    def _make_client(self):
+        return MagicMock(spec=ConfluenceClient)
+
+    def test_raises_valueerror_when_parent_id_not_found(self):
+        """sync_docs_tree must raise ValueError before touching any pages when the
+        configured root parent page does not exist."""
+        client = self._make_client()
+        client.base_url = "https://example.atlassian.net"
+        client.get_page_by_id.return_value = None
+
+        with self.assertRaises(ValueError) as ctx:
+            sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "999999", "Docs")
+
+        msg = str(ctx.exception)
+        self.assertIn("999999", msg)
+        self.assertIn("confluence_parent_id", msg)
+        self.assertIn("DOC", msg)
+        # No pages should have been created or updated
+        client.create_page.assert_not_called()
+        client.update_page.assert_not_called()
+
+    def test_error_includes_base_url(self):
+        """The ValueError must mention the base URL to help diagnose wrong-site issues."""
+        client = self._make_client()
+        client.base_url = "https://example.atlassian.net"
+        client.get_page_by_id.return_value = None
+
+        with self.assertRaises(ValueError) as ctx:
+            sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "123", "Docs")
+
+        self.assertIn("https://example.atlassian.net", str(ctx.exception))
+
+    @patch("sync_to_confluence.logger")
+    def test_warns_on_space_mismatch(self, mock_logger):
+        """A warning must be logged when the root parent page belongs to a different space."""
+        client = self._make_client()
+        client.get_page_by_id.return_value = {
+            "id": "100",
+            "title": "Root",
+            "space": {"key": "OTHER"},
+            "version": {"number": 1},
+        }
+        client.list_github_docs = MagicMock(return_value=[])
+
+        with patch("sync_to_confluence.list_github_docs", return_value=[]):
+            sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        self.assertTrue(
+            any("OTHER" in c and "DOC" in c for c in warning_calls),
+            f"Expected space-mismatch warning in: {warning_calls}",
+        )
+
+    @patch("sync_to_confluence.list_github_docs")
+    def test_no_warning_when_spaces_match(self, mock_list):
+        """No warning when the root parent page is in the expected space."""
+        client = self._make_client()
+        client.get_page_by_id.return_value = {
+            "id": "100",
+            "title": "Root",
+            "space": {"key": "DOC"},
+            "version": {"number": 1},
+        }
+        mock_list.return_value = []
+
+        with patch("sync_to_confluence.logger") as mock_logger:
+            sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        self.assertFalse(
+            any("space" in c.lower() and "mismatch" in c.lower() or "OTHER" in c for c in warning_calls),
+        )
+
+    @patch("sync_to_confluence.get_github_file_content")
+    @patch("sync_to_confluence.list_github_docs")
+    def test_valid_config_proceeds_normally(self, mock_list, mock_fetch):
+        """When the parent page exists, sync proceeds as before (no regression)."""
+        client = self._make_client()
+        client.get_page_by_id.return_value = {
+            "id": "100",
+            "title": "Root",
+            "space": {"key": "DOC"},
+            "version": {"number": 1},
+        }
+        mock_list.return_value = ["Docs/README.md"]
+        mock_fetch.return_value = "# Root"
+
+        sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        # update_page called for the README (updating root parent)
+        client.update_page.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

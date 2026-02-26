@@ -403,6 +403,28 @@ def sync_docs_tree(
     page for ``Docs/README.md``).  All other ``.md`` files become child pages
     of their folder page, titled by filename without extension.
     """
+    # Preflight: verify the configured root parent page exists and is accessible.
+    parent_page = confluence.get_page_by_id(root_parent_id)
+    if parent_page is None:
+        raise ValueError(
+            f"The configured confluence_parent_id={root_parent_id!r} does not exist or is not "
+            f"accessible. Confluence base URL: {confluence.base_url!r}. "
+            f"Confluence space: {space_key!r}. "
+            "Common causes: wrong page ID, deleted page, wrong Confluence site/base_url, "
+            "or insufficient permissions."
+        )
+
+    # Optional: warn if the root parent page belongs to a different space.
+    page_space_key = parent_page.get("space", {}).get("key", "")
+    if page_space_key and page_space_key != space_key:
+        logger.warning(
+            "Root parent page (id=%s) is in Confluence space %r but confluence_space is "
+            "configured as %r. This may cause sync issues.",
+            root_parent_id,
+            page_space_key,
+            space_key,
+        )
+
     md_files = list_github_docs(github_token, github_repo, github_branch, docs_root)
 
     # Mapping from repository directory path → Confluence page ID.
