@@ -1,18 +1,3 @@
-# Confluence connection settings (can also be supplied via environment variables)
-confluence:
-  url: ${{ secrets.CONFLUENCE_ABC }}
-  username: ${{ secrets.CONFLUENCE_USERNAME }}
-
-# One or more sync blocks.  Each block defines a GitHub source and the
-# Confluence destination.
-#
-# Tree-sync mode (recommended):
-#   Set docs_root to the repository folder you want to mirror.
-#   All Markdown files under that folder are synced, preserving directory
-#   structure as nested Confluence pages.  confluence_parent_id is required.
-#
-# Legacy mode (explicit document list):
-#   Use the documents: list to map individual files to Confluence titles.
 sync:
   - github_repo: Pinakin-Desai-HBK/docs-github-confluence
     github_branch: main # branch to read documents from
