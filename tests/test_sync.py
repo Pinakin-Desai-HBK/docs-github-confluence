@@ -296,6 +296,47 @@ class TestConfluenceClient(unittest.TestCase):
         self.assertIn("non-JSON", msg)
         self.assertIn("text/html", msg)
 
+    @patch("sync_to_confluence.logger")
+    @patch("sync_to_confluence.requests.post")
+    def test_create_page_logs_error_on_failure(self, mock_post, mock_logger):
+        """create_page logs status code and body snippet on non-2xx before raising."""
+        import requests as req_lib
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.status_code = 400
+        mock_resp.text = '{"message":"Title is required"}'
+        http_err = req_lib.exceptions.HTTPError("400 Client Error")
+        mock_resp.raise_for_status.side_effect = http_err
+        mock_post.return_value = mock_resp
+
+        with self.assertRaises(req_lib.exceptions.HTTPError):
+            self.client.create_page("DOC", "Folder", "<p></p>", parent_id="10")
+
+        mock_logger.error.assert_called_once()
+        log_args = mock_logger.error.call_args[0]
+        self.assertIn(400, log_args)
+        self.assertNotIn("apitoken", str(log_args))
+
+    @patch("sync_to_confluence.logger")
+    @patch("sync_to_confluence.requests.put")
+    def test_update_page_logs_error_on_failure(self, mock_put, mock_logger):
+        """update_page logs status code and body snippet on non-2xx before raising."""
+        import requests as req_lib
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.status_code = 409
+        mock_resp.text = '{"message":"Version conflict"}'
+        mock_resp.raise_for_status.side_effect = req_lib.exceptions.HTTPError("409 Client Error")
+        mock_put.return_value = mock_resp
+
+        with self.assertRaises(req_lib.exceptions.HTTPError):
+            self.client.update_page("42", "Title", "<p>x</p>", 1)
+
+        mock_logger.error.assert_called_once()
+        log_args = mock_logger.error.call_args[0]
+        self.assertIn(409, log_args)
+        self.assertNotIn("apitoken", str(log_args))
+
     def test_parse_json_response_valid_json(self):
         """Valid JSON responses are returned without error."""
         mock_resp = MagicMock()
@@ -529,7 +570,16 @@ class TestEnsureFolderPage(unittest.TestCase):
         client.create_page.return_value = {"id": "66"}
         result = ensure_folder_page(client, "DOC", "HowTo", "10")
         self.assertEqual(result, "66")
-        client.create_page.assert_called_once_with("DOC", "HowTo", "", parent_id="10")
+        client.create_page.assert_called_once_with("DOC", "HowTo", "<p></p>", parent_id="10")
+
+    def test_creates_page_with_non_empty_body(self):
+        """Folder pages must be created with a non-empty body to avoid HTTP 400."""
+        client = self._make_client()
+        client.get_page_by_title_under_parent.return_value = None
+        client.create_page.return_value = {"id": "66"}
+        ensure_folder_page(client, "DOC", "HowTo", "10")
+        _, _, body = client.create_page.call_args[0]
+        self.assertTrue(body, "Folder page body must not be empty")
 
 
 # ---------------------------------------------------------------------------

@@ -305,6 +305,11 @@ class ConfluenceClient:
         if parent_id:
             body["ancestors"] = [{"id": parent_id}]
         response = requests.post(url, headers=self.headers, json=body, timeout=30)
+        if not response.ok:
+            logger.error(
+                "Confluence API error [POST %s] status=%d title=%r parent_id=%r body=%s",
+                url, response.status_code, title, parent_id, response.text[:500],
+            )
         response.raise_for_status()
         return self._parse_json_response(response, "POST", url)
 
@@ -320,6 +325,11 @@ class ConfluenceClient:
             "body": {"storage": {"value": content, "representation": "storage"}},
         }
         response = requests.put(url, headers=self.headers, json=body, timeout=30)
+        if not response.ok:
+            logger.error(
+                "Confluence API error [PUT %s] status=%d title=%r page_id=%r body=%s",
+                url, response.status_code, title, page_id, response.text[:500],
+            )
         response.raise_for_status()
         return self._parse_json_response(response, "PUT", url)
 
@@ -371,7 +381,7 @@ def ensure_folder_page(
     existing = confluence.get_page_by_title_under_parent(space_key, folder_name, parent_id)
     if existing:
         return existing["id"]
-    result = confluence.create_page(space_key, folder_name, "", parent_id=parent_id)
+    result = confluence.create_page(space_key, folder_name, "<p></p>", parent_id=parent_id)
     logger.info("Created folder page '%s' (id=%s)", folder_name, result["id"])
     return result["id"]
 
