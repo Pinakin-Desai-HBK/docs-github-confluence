@@ -1,16 +1,21 @@
 ## Markdown Markup Showcase
 
-This page demonstrates many different types of **Markdown** markup that can be synced between GitHub and Confluence.
+This page demonstrates many different types of **Markdown** markup that can be synced between GitHub and Confluencex.
 
 ---
 
 ### 1. Headings
 
 # H1 Heading
+
 ## H2 Heading
+
 ### H3 Heading
+
 #### H4 Heading
+
 ##### H5 Heading
+
 ###### H6 Heading
 
 ---
@@ -18,8 +23,8 @@ This page demonstrates many different types of **Markdown** markup that can be s
 ### 2. Emphasis
 
 - **Bold text**
-- *Italic text*
-- ***Bold and italic text***
+- _Italic text_
+- **_Bold and italic text_**
 - ~~Strikethrough text~~
 - Subscript: H~2~O
 - Superscript: 10^6^
@@ -50,8 +55,8 @@ This line appears directly under the previous one.
 
 1. First item
 2. Second item
-	1. Second item nested A
-	2. Second item nested B
+   1. Second item nested A
+   2. Second item nested B
 3. Third item
 
 #### 4.3 Task list
@@ -66,27 +71,27 @@ This line appears directly under the previous one.
 
 #### 5.1 Simple table
 
-| Name    | Role        | Active |
-|---------|-------------|:------:|
-| Alice   | Developer   |  ✅    |
-| Bob     | QA Engineer |  ❌    |
-| Carol   | Manager     |  ✅    |
+| Name  | Role        | Active |
+| ----- | ----------- | :----: |
+| Alice | Developer   |   ✅   |
+| Bob   | QA Engineer |   ❌   |
+| Carol | Manager     |   ✅   |
 
 #### 5.2 Alignment and formatting
 
-| Column Left        | Column Center        | Column Right        |
-|:-------------------|:--------------------:|--------------------:|
-| Plain text         | **Bold center**      | 12345               |
-| *Italic left*      | `inline code`        | 98.76               |
-| Multi-line content | Line 1<br>Line 2     | $1,234.56           |
+| Column Left        |  Column Center   | Column Right |
+| :----------------- | :--------------: | -----------: |
+| Plain text         | **Bold center**  |        12345 |
+| _Italic left_      |  `inline code`   |        98.76 |
+| Multi-line content | Line 1<br>Line 2 |    $1,234.56 |
 
 #### 5.3 Table with links
 
-| Environment | URL                                      | Notes                 |
-|-------------|------------------------------------------|-----------------------|
-| Dev         | https://dev.example.com                  | Internal only         |
-| Staging     | https://staging.example.com              | UAT environment       |
-| Production  | https://www.example.com                  | Customer-facing site  |
+| Environment | URL                         | Notes                |
+| ----------- | --------------------------- | -------------------- |
+| Dev         | https://dev.example.com     | Internal only        |
+| Staging     | https://staging.example.com | UAT environment      |
+| Production  | https://www.example.com     | Customer-facing site |
 
 ---
 
@@ -135,6 +140,7 @@ if __name__ == "__main__":
 > a note or an important callout in the documentation.
 
 > #### Nested content
+>
 > - Bullet one
 > - Bullet two
 
@@ -185,16 +191,16 @@ Term 2
 
 1. Step one: run the sync script.
 
-	```bash
-	python sync_to_confluence.py --dry-run
-	```
+   ```bash
+   python sync_to_confluence.py --dry-run
+   ```
 
 2. Step two: verify that the following table matches what appears in Confluence:
 
-	| ID | Status  |
-	|----|---------|
-	| 1  | Synced  |
-	| 2  | Pending |
+   | ID  | Status  |
+   | --- | ------- |
+   | 1   | Synced  |
+   | 2   | Pending |
 
 3. Step three: update this document with additional markup if you need to test new scenarios.
 
