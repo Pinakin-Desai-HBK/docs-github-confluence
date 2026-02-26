@@ -13,9 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sync_to_confluence import (
     ConfluenceClient,
     get_github_file_content,
+    list_github_docs,
+    derive_confluence_title,
+    ensure_folder_page,
     load_config,
     markdown_to_confluence,
     sync_document,
+    sync_docs_tree,
 )
 
 
@@ -378,6 +382,237 @@ class TestSyncDocument(unittest.TestCase):
 
         with self.assertRaises(Exception):
             sync_document(client, "DOC", "Doc", "content")
+
+
+# ---------------------------------------------------------------------------
+# derive_confluence_title
+# ---------------------------------------------------------------------------
+
+class TestDeriveConfluenceTitle(unittest.TestCase):
+    def test_readme_md_returns_none(self):
+        self.assertIsNone(derive_confluence_title("README.md"))
+
+    def test_readme_case_insensitive(self):
+        self.assertIsNone(derive_confluence_title("readme.md"))
+        self.assertIsNone(derive_confluence_title("Readme.MD"))
+        self.assertIsNone(derive_confluence_title("README.MD"))
+
+    def test_normal_md_strips_extension(self):
+        self.assertEqual(derive_confluence_title("Installation.md"), "Installation")
+        self.assertEqual(derive_confluence_title("my-doc.md"), "my-doc")
+
+    def test_nested_name_uses_basename(self):
+        # derive_confluence_title works on filename only, not full paths
+        self.assertEqual(derive_confluence_title("Setup.md"), "Setup")
+
+    def test_no_extension_returns_name(self):
+        self.assertEqual(derive_confluence_title("somefile"), "somefile")
+
+
+# ---------------------------------------------------------------------------
+# list_github_docs
+# ---------------------------------------------------------------------------
+
+class TestListGithubDocs(unittest.TestCase):
+    def _make_tree_response(self, items: list) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"tree": items}
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    @patch("sync_to_confluence.requests.get")
+    def test_returns_md_files_under_docs(self, mock_get):
+        tree = [
+            {"type": "blob", "path": "Docs/README.md"},
+            {"type": "blob", "path": "Docs/HowTo/Test.md"},
+            {"type": "blob", "path": "Docs/HowTo/README.md"},
+            {"type": "blob", "path": "other/file.md"},   # outside Docs/
+            {"type": "tree", "path": "Docs/HowTo"},       # directory entry
+        ]
+        mock_get.return_value = self._make_tree_response(tree)
+        result = list_github_docs("token", "org/repo", "main", "Docs")
+        self.assertIn("Docs/README.md", result)
+        self.assertIn("Docs/HowTo/Test.md", result)
+        self.assertIn("Docs/HowTo/README.md", result)
+        self.assertNotIn("other/file.md", result)
+        self.assertNotIn("Docs/HowTo", result)
+
+    @patch("sync_to_confluence.requests.get")
+    def test_excludes_non_md_files(self, mock_get):
+        tree = [
+            {"type": "blob", "path": "Docs/image.png"},
+            {"type": "blob", "path": "Docs/guide.md"},
+        ]
+        mock_get.return_value = self._make_tree_response(tree)
+        result = list_github_docs("token", "org/repo", "main", "Docs")
+        self.assertEqual(result, ["Docs/guide.md"])
+
+    @patch("sync_to_confluence.requests.get")
+    def test_uses_correct_github_api_url(self, mock_get):
+        mock_get.return_value = self._make_tree_response([])
+        list_github_docs("mytoken", "org/repo", "develop", "Docs")
+        url = mock_get.call_args[0][0]
+        self.assertIn("org/repo", url)
+        self.assertIn("develop", url)
+        self.assertIn("recursive=1", url)
+
+
+# ---------------------------------------------------------------------------
+# ConfluenceClient.get_page_by_title_under_parent / get_page_by_id
+# ---------------------------------------------------------------------------
+
+class TestConfluenceClientExtended(unittest.TestCase):
+    def setUp(self):
+        self.client = ConfluenceClient(
+            "https://example.atlassian.net", "user@example.com", "apitoken"
+        )
+
+    def _mock_response(self, data: dict, status: int = 200) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = data
+        mock_resp.status_code = status
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_resp.text = json.dumps(data)
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_by_title_under_parent_found(self, mock_get):
+        page = {"id": "77", "version": {"number": 2}}
+        mock_get.return_value = self._mock_response({"results": [page]})
+        result = self.client.get_page_by_title_under_parent("DOC", "HowTo", "100")
+        self.assertEqual(result["id"], "77")
+        # CQL should include the parent constraint
+        params = mock_get.call_args.kwargs["params"]
+        self.assertIn("parent = 100", params["cql"])
+        self.assertIn("HowTo", params["cql"])
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_by_title_under_parent_not_found(self, mock_get):
+        mock_get.return_value = self._mock_response({"results": []})
+        result = self.client.get_page_by_title_under_parent("DOC", "Missing", "100")
+        self.assertIsNone(result)
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_by_id_found(self, mock_get):
+        page = {"id": "42", "title": "HowTo", "version": {"number": 3}}
+        mock_get.return_value = self._mock_response(page)
+        result = self.client.get_page_by_id("42")
+        self.assertEqual(result["id"], "42")
+        self.assertEqual(result["title"], "HowTo")
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_by_id_not_found_returns_none(self, mock_get):
+        mock_get.return_value = self._mock_response({}, status=404)
+        result = self.client.get_page_by_id("999")
+        self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# ensure_folder_page
+# ---------------------------------------------------------------------------
+
+class TestEnsureFolderPage(unittest.TestCase):
+    def _make_client(self):
+        return MagicMock(spec=ConfluenceClient)
+
+    def test_returns_existing_page_id(self):
+        client = self._make_client()
+        client.get_page_by_title_under_parent.return_value = {"id": "55", "version": {"number": 1}}
+        result = ensure_folder_page(client, "DOC", "HowTo", "10")
+        self.assertEqual(result, "55")
+        client.create_page.assert_not_called()
+
+    def test_creates_page_when_not_found(self):
+        client = self._make_client()
+        client.get_page_by_title_under_parent.return_value = None
+        client.create_page.return_value = {"id": "66"}
+        result = ensure_folder_page(client, "DOC", "HowTo", "10")
+        self.assertEqual(result, "66")
+        client.create_page.assert_called_once_with("DOC", "HowTo", "", parent_id="10")
+
+
+# ---------------------------------------------------------------------------
+# sync_docs_tree
+# ---------------------------------------------------------------------------
+
+class TestSyncDocsTree(unittest.TestCase):
+    def _make_client(self):
+        return MagicMock(spec=ConfluenceClient)
+
+    @patch("sync_to_confluence.get_github_file_content")
+    @patch("sync_to_confluence.list_github_docs")
+    def test_readme_at_root_updates_parent_page(self, mock_list, mock_fetch):
+        """Docs/README.md should update the configured root parent page."""
+        client = self._make_client()
+        mock_list.return_value = ["Docs/README.md"]
+        mock_fetch.return_value = "# Root"
+        client.get_page_by_id.return_value = {"id": "100", "title": "Root", "version": {"number": 1}}
+
+        sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        client.get_page_by_id.assert_called_with("100")
+        client.update_page.assert_called_once()
+        args = client.update_page.call_args[0]
+        self.assertEqual(args[0], "100")   # page id
+        self.assertEqual(args[1], "Root")  # title unchanged
+
+    @patch("sync_to_confluence.get_github_file_content")
+    @patch("sync_to_confluence.list_github_docs")
+    def test_readme_in_subfolder_updates_folder_page(self, mock_list, mock_fetch):
+        """Docs/HowTo/README.md should update the HowTo folder page."""
+        client = self._make_client()
+        mock_list.return_value = ["Docs/HowTo/README.md"]
+        mock_fetch.return_value = "# HowTo"
+        # ensure_folder_page will find existing HowTo page
+        client.get_page_by_title_under_parent.return_value = {"id": "200", "version": {"number": 1}}
+        client.get_page_by_id.return_value = {"id": "200", "title": "HowTo", "version": {"number": 1}}
+
+        sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        client.update_page.assert_called_once()
+        args = client.update_page.call_args[0]
+        self.assertEqual(args[0], "200")    # HowTo page id
+        self.assertEqual(args[1], "HowTo")  # title unchanged
+
+    @patch("sync_to_confluence.get_github_file_content")
+    @patch("sync_to_confluence.list_github_docs")
+    def test_normal_file_creates_child_page(self, mock_list, mock_fetch):
+        """Docs/HowTo/Test.md should create a 'Test' page under the HowTo folder."""
+        client = self._make_client()
+        mock_list.return_value = ["Docs/HowTo/Test.md"]
+        mock_fetch.return_value = "# Test"
+        # ensure_folder_page finds HowTo
+        client.get_page_by_title_under_parent.side_effect = [
+            {"id": "200", "version": {"number": 1}},  # ensure_folder_page lookup
+            None,                                       # normal file lookup
+        ]
+        client.create_page.return_value = {"id": "300"}
+
+        sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        client.create_page.assert_called_once()
+        self.assertEqual(client.create_page.call_args.args[1], "Test")   # title without extension
+
+    @patch("sync_to_confluence.get_github_file_content")
+    @patch("sync_to_confluence.list_github_docs")
+    def test_normal_file_updates_existing_page(self, mock_list, mock_fetch):
+        """Existing child pages are updated, not re-created."""
+        client = self._make_client()
+        mock_list.return_value = ["Docs/HowTo/Test.md"]
+        mock_fetch.return_value = "# Test"
+        client.get_page_by_title_under_parent.side_effect = [
+            {"id": "200", "version": {"number": 1}},   # ensure_folder_page
+            {"id": "300", "version": {"number": 2}},   # existing Test page
+        ]
+
+        sync_docs_tree(client, "tok", "org/repo", "main", "DOC", "100", "Docs")
+
+        client.update_page.assert_called_once()
+        update_args = client.update_page.call_args.args
+        self.assertEqual(update_args[0], "300")
+        self.assertEqual(update_args[1], "Test")
+        self.assertEqual(update_args[3], 2)   # current version passed through
 
 
 if __name__ == "__main__":

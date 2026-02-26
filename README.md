@@ -12,7 +12,7 @@ them up-to-date at regular intervals.
    creates or updates the corresponding Confluence page.
 3. A GitHub Actions workflow (`.github/workflows/sync.yml`) runs the script on
    a **cron schedule every 6 hours**, on every push to `main` that changes
-   `config.yml`, and on demand via `workflow_dispatch`.
+   anything under `Docs/**` or `config.yml`, and on demand via `workflow_dispatch`.
 
 ## Setup
 
@@ -28,6 +28,17 @@ Notes on `confluence_space`:
 - If the space key is invalid or inaccessible, Confluence may return HTTP 404 with a
   message like `No space with key : DOC`.
 
+#### Tree-sync mode (recommended)
+
+Set `docs_root` to the folder you want to mirror.  The script will discover all
+Markdown files recursively and recreate the directory structure as Confluence pages
+nested under the page identified by `confluence_parent_id`.
+
+- Page titles are the **filename without extension** (e.g. `Installation.md` → *Installation*).
+- `README.md` is special: it updates the *folder page* itself rather than creating a
+  new child page.  `Docs/README.md` updates the root page identified by
+  `confluence_parent_id`; `Docs/<folder>/README.md` updates the `<folder>` page.
+
 ```yaml
 confluence:
   url: https://your-domain.atlassian.net
@@ -37,6 +48,19 @@ sync:
   - github_repo: your-org/your-repo
     github_branch: main
     confluence_space: DOC # or "~your-username" for a personal space (Data Center)
+    confluence_parent_id: "123456" # ID of the root landing page (required)
+    docs_root: Docs # mirror everything under Docs/ into Confluence
+```
+
+#### Legacy mode (explicit document list)
+
+You can still list individual files explicitly:
+
+```yaml
+sync:
+  - github_repo: your-org/your-repo
+    github_branch: main
+    confluence_space: DOC
     confluence_parent_id: "123456" # optional parent page ID
     documents:
       - github_path: docs/README.md

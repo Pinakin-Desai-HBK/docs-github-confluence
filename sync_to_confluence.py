@@ -53,6 +53,45 @@ def get_github_file_content(
     return base64.b64decode(data["content"]).decode("utf-8")
 
 
+def list_github_docs(
+    github_token: str, repo: str, branch: str = "main", docs_root: str = "Docs"
+) -> list[str]:
+    """Return all .md file paths under *docs_root* in the given repo/branch.
+
+    Uses the GitHub Git Trees API with ``recursive=1`` so a single request
+    retrieves the entire directory tree.
+    """
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    url = f"https://api.github.com/repos/{repo}/git/trees/{branch}?recursive=1"
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    prefix = docs_root.rstrip("/") + "/"
+    return [
+        item["path"]
+        for item in data.get("tree", [])
+        if item["type"] == "blob"
+        and item["path"].startswith(prefix)
+        and item["path"].lower().endswith(".md")
+    ]
+
+
+def derive_confluence_title(filename: str) -> Optional[str]:
+    """Return the Confluence page title for *filename*.
+
+    Returns ``None`` for ``README.md`` (any case) — the caller should treat
+    this as a signal to update the *parent/folder* page rather than creating a
+    new child page.  For every other file the extension is stripped.
+    """
+    if filename.lower() == "readme.md":
+        return None
+    name, _ = os.path.splitext(filename)
+    return name
+
+
 # ---------------------------------------------------------------------------
 # Markdown → Confluence storage-format conversion
 # ---------------------------------------------------------------------------
@@ -212,6 +251,42 @@ class ConfluenceClient:
         results = data.get("results", [])
         return results[0] if results else None
 
+    def get_page_by_title_under_parent(
+        self, space_key: str, title: str, parent_id: str
+    ) -> Optional[dict]:
+        """Return a page dict if *title* exists as a direct child of *parent_id*, else None.
+
+        Uses CQL to restrict the search to pages whose immediate parent is
+        *parent_id*, avoiding false matches from same-titled pages elsewhere
+        in the space.
+        """
+        url = f"{self.base_url}/rest/api/content/search"
+        safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+        safe_space = space_key.replace("\\", "\\\\").replace('"', '\\"')
+        cql = (
+            f'title = "{safe_title}" AND parent = {parent_id}'
+            f' AND space = "{safe_space}" AND type = page'
+        )
+        params = {"cql": cql, "expand": "version"}
+        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        data = self._parse_json_response(response, "GET", url)
+        if response.status_code >= 400:
+            return None
+        results = data.get("results", [])
+        return results[0] if results else None
+
+    def get_page_by_id(self, page_id: str) -> Optional[dict]:
+        """Return a page dict (with version and title) for *page_id*, or None if not found."""
+        url = f"{self.base_url}/rest/api/content/{page_id}"
+        params = {"expand": "version"}
+        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        if response.status_code == 404:
+            return None
+        data = self._parse_json_response(response, "GET", url)
+        if response.status_code >= 400:
+            return None
+        return data
+
     def create_page(
         self,
         space_key: str,
@@ -282,6 +357,120 @@ def normalize_github_repo(repo: str) -> str:
 
     return repo
 
+
+def ensure_folder_page(
+    confluence: ConfluenceClient,
+    space_key: str,
+    folder_name: str,
+    parent_id: str,
+) -> str:
+    """Find or create a Confluence page named *folder_name* under *parent_id*.
+
+    Returns the Confluence page ID (string).
+    """
+    existing = confluence.get_page_by_title_under_parent(space_key, folder_name, parent_id)
+    if existing:
+        return existing["id"]
+    result = confluence.create_page(space_key, folder_name, "", parent_id=parent_id)
+    logger.info("Created folder page '%s' (id=%s)", folder_name, result["id"])
+    return result["id"]
+
+
+def sync_docs_tree(
+    confluence: ConfluenceClient,
+    github_token: str,
+    github_repo: str,
+    github_branch: str,
+    space_key: str,
+    root_parent_id: str,
+    docs_root: str = "Docs",
+) -> None:
+    """Mirror all Markdown files under *docs_root* into Confluence.
+
+    Folder structure is preserved by creating (or reusing) a Confluence page
+    for each directory, nested under *root_parent_id*.  ``README.md`` files
+    act as the content for their enclosing folder page (or the root parent
+    page for ``Docs/README.md``).  All other ``.md`` files become child pages
+    of their folder page, titled by filename without extension.
+    """
+    md_files = list_github_docs(github_token, github_repo, github_branch, docs_root)
+
+    # Mapping from repository directory path → Confluence page ID.
+    # The docs_root directory itself is represented by root_parent_id.
+    folder_ids: dict[str, str] = {docs_root: root_parent_id}
+
+    for file_path in sorted(md_files):
+        parts = file_path.split("/")
+        filename = parts[-1]
+        dir_path = "/".join(parts[:-1])
+
+        # Ensure every intermediate folder page exists.
+        current_path = docs_root
+        for folder in parts[1:-1]:
+            next_path = f"{current_path}/{folder}"
+            if next_path not in folder_ids:
+                folder_ids[next_path] = ensure_folder_page(
+                    confluence, space_key, folder, folder_ids[current_path]
+                )
+            current_path = next_path
+
+        folder_page_id = folder_ids[dir_path]
+        title = derive_confluence_title(filename)
+
+        logger.info(
+            "Syncing '%s' from %s@%s", file_path, github_repo, github_branch
+        )
+        try:
+            markdown = get_github_file_content(
+                github_token, github_repo, file_path, github_branch
+            )
+            storage_content = markdown_to_confluence(markdown)
+
+            if title is None:
+                # README.md → update the folder page (or root parent) itself.
+                page = confluence.get_page_by_id(folder_page_id)
+                if page:
+                    logger.info(
+                        "Updating folder page '%s' (id=%s) with README content",
+                        page["title"],
+                        folder_page_id,
+                    )
+                    confluence.update_page(
+                        folder_page_id,
+                        page["title"],
+                        storage_content,
+                        page["version"]["number"],
+                    )
+                else:
+                    logger.warning(
+                        "Folder page id=%s not found; skipping '%s'",
+                        folder_page_id,
+                        file_path,
+                    )
+            else:
+                # Normal file → find/create as a child of the folder page.
+                existing = confluence.get_page_by_title_under_parent(
+                    space_key, title, folder_page_id
+                )
+                if existing:
+                    logger.info(
+                        "Updating page '%s' (id=%s)", title, existing["id"]
+                    )
+                    confluence.update_page(
+                        existing["id"],
+                        title,
+                        storage_content,
+                        existing["version"]["number"],
+                    )
+                else:
+                    logger.info("Creating page '%s' under id=%s", title, folder_page_id)
+                    result = confluence.create_page(
+                        space_key, title, storage_content, parent_id=folder_page_id
+                    )
+                    logger.info("Created page '%s' (id=%s)", title, result["id"])
+        except Exception as exc:
+            logger.error("Failed to sync '%s': %s", file_path, exc)
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -320,6 +509,33 @@ def main(config_path: str = "config.yml") -> None:
         github_branch = sync_entry.get("github_branch", "main")
         space_key = sync_entry["confluence_space"]
         parent_id = sync_entry.get("confluence_parent_id")
+
+        docs_root = sync_entry.get("docs_root")
+        if docs_root is not None:
+            # Tree-sync mode: mirror all Markdown under docs_root into Confluence.
+            if not parent_id:
+                logger.error(
+                    "confluence_parent_id is required when using docs_root; skipping entry."
+                )
+                continue
+            logger.info(
+                "Syncing Docs tree '%s' from %s@%s → Confluence space %s (parent %s)",
+                docs_root,
+                github_repo,
+                github_branch,
+                space_key,
+                parent_id,
+            )
+            sync_docs_tree(
+                confluence,
+                github_token,
+                github_repo,
+                github_branch,
+                space_key,
+                parent_id,
+                docs_root,
+            )
+            continue
 
         for doc in sync_entry.get("documents", []):
             github_path = doc["github_path"]
