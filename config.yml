@@ -8,7 +8,7 @@ confluence:
 sync:
   - github_repo: Pinakin-Desai-HBK/docs-github-confluence
     github_branch: main # branch to read documents from
-    confluence_space: DOC # Confluence space key
+    confluence_space: ~PDESAI # Confluence space key
     confluence_parent_id: "123456" # optional: ID of the parent page
     documents:
       - github_path: docs/Hello.md
