@@ -14,8 +14,12 @@ import re
 import sys
 from typing import Optional
 
+import bleach
 import requests
 import yaml
+from lxml import etree
+from markdown_it import MarkdownIt
+from mdit_py_plugins.tasklists import tasklists_plugin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,95 +100,93 @@ def derive_confluence_title(filename: str) -> Optional[str]:
 # Markdown → Confluence storage-format conversion
 # ---------------------------------------------------------------------------
 
+# Markdown-it instance: GFM-like preset (tables + strikethrough built-in)
+# with raw-HTML pass-through disabled so arbitrary inline HTML is escaped.
+_MARKDOWN_IT = MarkdownIt(
+    "gfm-like", {"html": False, "xhtmlOut": True, "linkify": False}
+).use(tasklists_plugin)
+
+# Bleach allowlist – tags and attributes acceptable in Confluence storage XHTML.
+_BLEACH_ALLOWED_TAGS = frozenset([
+    "p", "br", "strong", "em", "s", "del", "code", "pre",
+    "a", "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "blockquote",
+])
+_BLEACH_ALLOWED_ATTRS: dict[str, list[str]] = {
+    "a": ["href", "title"],
+    "td": ["colspan", "rowspan"],
+    "th": ["colspan", "rowspan"],
+}
+_BLEACH_ALLOWED_PROTOCOLS = ["http", "https", "mailto"]
+
+# Placeholder tokens used during pre/post processing.  Pure ASCII so they
+# pass through markdown-it and bleach unmodified.
+_BR_PLACEHOLDER = "XCONFLUENCEBRX"
+_CODE_PLACEHOLDER_FMT = "XCONFLUENCECODE{idx}X"
+_BR_RE = re.compile(r"<[Bb][Rr]\s*/?>")
+_FENCED_CODE_RE = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
+
+
 def markdown_to_confluence(markdown_content: str) -> str:
-    """
-    Convert markdown text to Confluence storage format (XHTML subset).
+    """Convert markdown text to Confluence storage format (XHTML subset).
 
-    Handles the most common markdown constructs:
-    headings, bold/italic, fenced code blocks, inline code, links, and lists.
+    Pipeline:
+      1. Extract fenced code blocks → Confluence ``ac:structured-macro`` snippets
+         (stored aside so their content is never touched by later steps).
+      2. Normalize ``<br>`` variants to a placeholder (``html=False`` below would
+         otherwise escape them as ``&lt;br&gt;``).
+      3. Render markdown with *markdown-it-py* (GFM-like: tables, strikethrough,
+         task lists) with ``html=False`` so all raw inline HTML is escaped.
+      4. Sanitize with *bleach* (allowlist-based; escapes unknown tags).
+      5. Serialize as well-formed XHTML via *lxml* (void elements self-close, etc.).
+      6. Restore ``<br/>`` and the Confluence code macros.
     """
-    content = markdown_content
+    macros: list[str] = []
 
-    # Fenced code blocks (must come before inline-code replacement)
-    def replace_code_block(match: re.Match) -> str:
+    def _extract_code_block(match: re.Match) -> str:
         lang = match.group(1) or ""
         body = match.group(2)
-        return (
+        macro = (
             f'<ac:structured-macro ac:name="code">'
             f'<ac:parameter ac:name="language">{lang}</ac:parameter>'
             f"<ac:plain-text-body><![CDATA[{body}]]></ac:plain-text-body>"
             f"</ac:structured-macro>"
         )
+        idx = len(macros)
+        macros.append(macro)
+        return _CODE_PLACEHOLDER_FMT.format(idx=idx)
 
-    content = re.sub(r"```(\w+)?\n(.*?)```", replace_code_block, content, flags=re.DOTALL)
+    # Step 1 – extract fenced code blocks before any other processing.
+    content = _FENCED_CODE_RE.sub(_extract_code_block, markdown_content)
 
-    # Headings (h6 → h1, processed largest-first to avoid double substitution)
-    for level in range(6, 0, -1):
-        content = re.sub(
-            rf"^{'#' * level} (.+)$",
-            rf"<h{level}>\1</h{level}>",
-            content,
-            flags=re.MULTILINE,
-        )
+    # Step 2 – stash <br> variants so html=False doesn't escape them.
+    content = _BR_RE.sub(_BR_PLACEHOLDER, content)
 
-    # Bold + italic combined (*** and ___) — must come before bold and italic
-    content = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", content)
-    content = re.sub(r"___(.+?)___", r"<strong><em>\1</em></strong>", content)
+    # Step 3 – render markdown → HTML (raw HTML in source is escaped).
+    rendered = _MARKDOWN_IT.render(content)
 
-    # Bold (** and __)
-    content = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", content)
-    content = re.sub(r"__(.+?)__", r"<strong>\1</strong>", content)
-
-    # Italic (* and _)
-    content = re.sub(r"\*(.+?)\*", r"<em>\1</em>", content)
-    content = re.sub(r"_(.+?)_", r"<em>\1</em>", content)
-
-    # Inline code
-    content = re.sub(r"`(.+?)`", r"<code>\1</code>", content)
-
-    # Normalize HTML line-break tags to self-closing XHTML form required by
-    # the Confluence storage-format parser (<br> → <br/>).  Skip content
-    # inside CDATA sections (fenced code blocks) so code examples are
-    # preserved verbatim.
-    _br_pattern = re.compile(r"<[Bb][Rr]\s*/?>")
-    parts = re.split(r"(<!\[CDATA\[.*?\]\]>)", content, flags=re.DOTALL)
-    content = "".join(
-        part if part.startswith("<![CDATA[") else _br_pattern.sub("<br/>", part)
-        for part in parts
+    # Step 4 – sanitize: escape tags not in the allowlist.
+    cleaned = bleach.clean(
+        rendered,
+        tags=_BLEACH_ALLOWED_TAGS,
+        attributes=_BLEACH_ALLOWED_ATTRS,
+        protocols=_BLEACH_ALLOWED_PROTOCOLS,
+        strip=False,
     )
 
-    # Links
-    content = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', content)
+    # Step 5 – normalize to well-formed XHTML (self-closing void elements, etc.).
+    root = etree.fromstring(f"<div>{cleaned}</div>")
+    serialized = etree.tostring(root, encoding="unicode", method="xml")
+    result = serialized[5:-6]  # strip outer <div>…</div>
 
-    # Unordered lists
-    lines = content.split("\n")
-    result_lines: list[str] = []
-    in_list = False
-    for line in lines:
-        if re.match(r"^[-*+] (.+)$", line):
-            if not in_list:
-                result_lines.append("<ul>")
-                in_list = True
-            item = re.sub(r"^[-*+] (.+)$", r"<li>\1</li>", line)
-            result_lines.append(item)
-        else:
-            if in_list:
-                result_lines.append("</ul>")
-                in_list = False
-            result_lines.append(line)
-    if in_list:
-        result_lines.append("</ul>")
-    content = "\n".join(result_lines)
+    # Step 6 – restore placeholders.
+    result = result.replace(_BR_PLACEHOLDER, "<br/>")
+    for idx, macro in enumerate(macros):
+        result = result.replace(_CODE_PLACEHOLDER_FMT.format(idx=idx), macro)
 
-    # Wrap plain-text paragraphs (separated by blank lines) in <p> tags
-    paragraphs = re.split(r"\n\n+", content)
-    wrapped: list[str] = []
-    for para in paragraphs:
-        para = para.strip()
-        if para and not para.startswith("<"):
-            para = f"<p>{para}</p>"
-        wrapped.append(para)
-    return "\n".join(wrapped)
+    return result
 
 
 # ---------------------------------------------------------------------------
