@@ -127,6 +127,10 @@ def markdown_to_confluence(markdown_content: str) -> str:
             flags=re.MULTILINE,
         )
 
+    # Bold + italic combined (*** and ___) — must come before bold and italic
+    content = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", content)
+    content = re.sub(r"___(.+?)___", r"<strong><em>\1</em></strong>", content)
+
     # Bold (** and __)
     content = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", content)
     content = re.sub(r"__(.+?)__", r"<strong>\1</strong>", content)
