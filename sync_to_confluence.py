@@ -339,11 +339,6 @@ class ConfluenceClient:
             "version": {"number": current_version + 1},
             "body": {"storage": {"value": content, "representation": "storage"}},
         }
-        # TEMP DEBUG: dump storage XHTML before sending to Confluence
-        if page_id == "405152490":
-            with open("debug-405152490.xhtml", "w", encoding="utf-8") as f:
-                f.write(content)
-            logger.error("Wrote debug-405152490.xhtml (len=%d)", len(content))
         response = requests.put(url, headers=self.headers, json=body, timeout=30)
         if not response.ok:
             logger.error(
