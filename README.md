@@ -18,7 +18,15 @@ them up-to-date at regular intervals.
 
 ### 1. Configure `config.yml`
 
-Edit `config.yml` to point to your repositories and Confluence space:
+Edit `config.yml` to point to your repositories and Confluence space.
+
+Notes on `confluence_space`:
+
+- This must be the **space key**, not the space name.
+- In Confluence Data Center, **personal spaces** commonly use keys like `~username`
+  (example: `~PDESAI`).
+- If the space key is invalid or inaccessible, Confluence may return HTTP 404 with a
+  message like `No space with key : DOC`.
 
 ```yaml
 confluence:
@@ -28,8 +36,8 @@ confluence:
 sync:
   - github_repo: your-org/your-repo
     github_branch: main
-    confluence_space: DOC
-    confluence_parent_id: "123456"   # optional parent page ID
+    confluence_space: DOC # or "~your-username" for a personal space (Data Center)
+    confluence_parent_id: "123456" # optional parent page ID
     documents:
       - github_path: docs/README.md
         confluence_title: "Project Overview"
@@ -41,11 +49,11 @@ sync:
 
 Go to **Settings → Secrets and variables → Actions** and add:
 
-| Secret | Description |
-|---|---|
-| `CONFLUENCE_URL` | Your Atlassian base URL, e.g. `https://your-domain.atlassian.net` |
-| `CONFLUENCE_USERNAME` | Your Atlassian account email |
-| `CONFLUENCE_API_TOKEN` | An [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| Secret                 | Description                                                                                                                   |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `CONFLUENCE_URL`       | Your Confluence base URL (Cloud or Data Center), e.g. `https://your-domain.atlassian.net` or `https://confluence.company.com` |
+| `CONFLUENCE_USERNAME`  | Your Atlassian account email                                                                                                  |
+| `CONFLUENCE_API_TOKEN` | Your API token / PAT (the script uses `Authorization: Bearer ...`)                                                            |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions.
 
@@ -71,10 +79,10 @@ python -m pytest tests/ -v
 
 ## File overview
 
-| File | Purpose |
-|---|---|
-| `sync_to_confluence.py` | Main sync script |
-| `config.yml` | Configuration (repos, branches, space keys, page titles) |
-| `requirements.txt` | Python dependencies |
-| `.github/workflows/sync.yml` | Scheduled GitHub Actions workflow |
-| `tests/test_sync.py` | Unit tests |
+| File                         | Purpose                                                  |
+| ---------------------------- | -------------------------------------------------------- |
+| `sync_to_confluence.py`      | Main sync script                                         |
+| `config.yml`                 | Configuration (repos, branches, space keys, page titles) |
+| `requirements.txt`           | Python dependencies                                      |
+| `.github/workflows/sync.yml` | Scheduled GitHub Actions workflow                        |
+| `tests/test_sync.py`         | Unit tests                                               |

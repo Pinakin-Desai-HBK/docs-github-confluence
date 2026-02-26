@@ -182,8 +182,34 @@ class ConfluenceClient:
         url = f"{self.base_url}/rest/api/content"
         params = {"spaceKey": space_key, "title": title, "expand": "version"}
         response = requests.get(url, headers=self.headers, params=params, timeout=30)
-        response.raise_for_status()
-        results = self._parse_json_response(response, "GET", url).get("results", [])
+
+        # Confluence often returns useful JSON error bodies even on non-2xx responses,
+        # especially for 404 cases in Confluence Data Center ("No space with key ...").
+        # Parse JSON first so we can provide actionable errors.
+        data = self._parse_json_response(response, "GET", url)
+
+        if response.status_code == 404:
+            message = str(data.get("message", "") or "")
+            if "no space with key" in message.lower():
+                raise ValueError(
+                    "Confluence space key is invalid or not accessible. "
+                    f"Configured confluence_space={space_key!r}. "
+                    "Verify the space key exists and that the token user has access "
+                    "(personal spaces are often like '~username'). "
+                    f"Confluence message: {message}"
+                )
+            # Treat other 404s as "page not found"
+            return None
+
+        if response.status_code >= 400:
+            message = str(data.get("message", "") or "")
+            raise ValueError(
+                "Confluence request failed "
+                f"[GET {url} -> HTTP {response.status_code}]. "
+                f"Message: {message}"
+            )
+
+        results = data.get("results", [])
         return results[0] if results else None
 
     def create_page(

@@ -169,6 +169,7 @@ class TestConfluenceClient(unittest.TestCase):
         mock_resp.json.return_value = data
         mock_resp.status_code = status
         mock_resp.headers = {"Content-Type": "application/json"}
+        mock_resp.text = json.dumps(data)
         mock_resp.raise_for_status = MagicMock()
         return mock_resp
 
@@ -183,6 +184,31 @@ class TestConfluenceClient(unittest.TestCase):
     def test_get_page_by_title_not_found(self, mock_get):
         mock_get.return_value = self._mock_response({"results": []})
         result = self.client.get_page_by_title("DOC", "Nonexistent")
+        self.assertIsNone(result)
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_by_title_404_invalid_space_key_raises_valueerror(self, mock_get):
+        payload = {
+            "statusCode": 404,
+            "data": {"authorized": False, "valid": True, "successful": False},
+            "message": "No space with key : DOC",
+            "reason": "Not Found",
+        }
+        mock_get.return_value = self._mock_response(payload, status=404)
+        with self.assertRaises(ValueError) as ctx:
+            self.client.get_page_by_title("DOC", "Hello")
+        self.assertIn("confluence_space", str(ctx.exception))
+        self.assertIn("No space with key", str(ctx.exception))
+
+    @patch("sync_to_confluence.requests.get")
+    def test_get_page_by_title_404_other_returns_none(self, mock_get):
+        payload = {
+            "statusCode": 404,
+            "message": "Not Found",
+            "reason": "Not Found",
+        }
+        mock_get.return_value = self._mock_response(payload, status=404)
+        result = self.client.get_page_by_title("DOC", "Hello")
         self.assertIsNone(result)
 
     @patch("sync_to_confluence.requests.post")
