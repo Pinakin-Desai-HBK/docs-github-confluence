@@ -2,10 +2,10 @@
 """
 Sync GitHub documents to Confluence.
 
-Supports:
-- Full tree sync of Docs/ (or another docs_root)
-- Changed-only sync via CHANGED_DOCS
-- Deletion of Confluence pages when docs are removed via REMOVED_DOCS
+Features:
+- Tree sync: mirror Markdown files under docs_root into Confluence.
+- Changed-only sync: if CHANGED_DOCS env var is set (newline-separated paths),
+  only those files are synced. Removed files are ignored (no deletes).
 - Separate hosted/cloud targets via config.yml entries with `target: hosted|cloud`
   and workflow-controlled CONFLUENCE_DEPLOYMENT.
 """
@@ -32,10 +32,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 def load_config(config_path: str = "config.yml") -> dict:
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
+
+# ---------------------------------------------------------------------------
+# GitHub helpers
+# ---------------------------------------------------------------------------
 
 def get_github_file_content(
     github_token: str, repo: str, file_path: str, branch: str = "main"
@@ -97,9 +105,9 @@ def read_changed_docs_from_env() -> list[str]:
     return _read_paths_env("CHANGED_DOCS")
 
 
-def read_removed_docs_from_env() -> list[str]:
-    return _read_paths_env("REMOVED_DOCS")
-
+# ---------------------------------------------------------------------------
+# Markdown → Confluence storage-format conversion
+# ---------------------------------------------------------------------------
 
 _MARKDOWN_IT = MarkdownIt(
     "gfm-like", {"html": False, "xhtmlOut": True, "linkify": False}
@@ -164,6 +172,10 @@ def markdown_to_confluence(markdown_content: str) -> str:
 
     return result
 
+
+# ---------------------------------------------------------------------------
+# Confluence REST API client
+# ---------------------------------------------------------------------------
 
 class ConfluenceClient:
     def __init__(
@@ -279,13 +291,10 @@ class ConfluenceClient:
         response.raise_for_status()
         return self._parse_json_response(response, "PUT", f"{self.base_url}{path}")
 
-    def delete_page(self, page_id: str) -> None:
-        path = f"/rest/api/content/{page_id}"
-        response = self._request("DELETE", path)
-        if response.status_code == 404:
-            return
-        response.raise_for_status()
 
+# ---------------------------------------------------------------------------
+# Sync logic
+# ---------------------------------------------------------------------------
 
 def normalize_github_repo(repo: str) -> str:
     repo = repo.strip()
@@ -309,29 +318,6 @@ def ensure_folder_page(
     return result["id"]
 
 
-def _compute_folder_ids_for_paths(
-    confluence: ConfluenceClient,
-    space_key: str,
-    root_parent_id: str,
-    docs_root: str,
-    paths: list[str],
-) -> dict[str, str]:
-    folder_ids: dict[str, str] = {docs_root: root_parent_id}
-
-    for file_path in paths:
-        parts = file_path.split("/")
-        current_path = docs_root
-        for folder in parts[1:-1]:
-            next_path = f"{current_path}/{folder}"
-            if next_path not in folder_ids:
-                folder_ids[next_path] = ensure_folder_page(
-                    confluence, space_key, folder, folder_ids[current_path]
-                )
-            current_path = next_path
-
-    return folder_ids
-
-
 def sync_docs_tree(
     confluence: ConfluenceClient,
     github_token: str,
@@ -340,8 +326,7 @@ def sync_docs_tree(
     space_key: str,
     root_parent_id: str,
     docs_root: str = "Docs",
-    changed_paths: Optional[list[str]] = None,
-    removed_paths: Optional[list[str]] = None,
+    only_paths: Optional[list[str]] = None,
 ) -> None:
     parent_page = confluence.get_page_by_id(root_parent_id)
     if parent_page is None:
@@ -353,30 +338,30 @@ def sync_docs_tree(
 
     prefix = docs_root.rstrip("/") + "/"
 
-    changed = [p for p in (changed_paths or []) if p.startswith(prefix) and p.lower().endswith(".md")]
-    removed = [p for p in (removed_paths or []) if p.startswith(prefix) and p.lower().endswith(".md")]
-
-    if changed or removed:
-        logger.info("Delta mode: %d changed, %d removed.", len(changed), len(removed))
-        md_files = changed
+    if only_paths:
+        md_files = [p for p in only_paths if p.startswith(prefix) and p.lower().endswith(".md")]
+        logger.info("Changed-only mode: syncing %d markdown file(s).", len(md_files))
     else:
         md_files = list_github_docs(github_token, github_repo, github_branch, docs_root)
         logger.info("Full-scan mode: syncing %d markdown file(s).", len(md_files))
 
-    # Ensure folder pages exist for anything we might touch (changed or removed paths).
-    folder_ids = _compute_folder_ids_for_paths(
-        confluence,
-        space_key,
-        root_parent_id,
-        docs_root,
-        md_files + removed,
-    )
+    # Map from repository directory → Confluence folder page ID
+    folder_ids: dict[str, str] = {docs_root: root_parent_id}
 
-    # ---- Sync changed/added files ----
     for file_path in sorted(md_files):
         parts = file_path.split("/")
         filename = parts[-1]
         dir_path = "/".join(parts[:-1])
+
+        # Ensure intermediate folder pages exist
+        current_path = docs_root
+        for folder in parts[1:-1]:
+            next_path = f"{current_path}/{folder}"
+            if next_path not in folder_ids:
+                folder_ids[next_path] = ensure_folder_page(
+                    confluence, space_key, folder, folder_ids[current_path]
+                )
+            current_path = next_path
 
         folder_page_id = folder_ids[dir_path]
         title = derive_confluence_title(filename)
@@ -392,6 +377,7 @@ def sync_docs_tree(
                 if not page:
                     logger.warning("Folder page id=%s not found; skipping README '%s'", folder_page_id, file_path)
                     continue
+
                 confluence.update_page(
                     folder_page_id,
                     page["title"],
@@ -409,60 +395,13 @@ def sync_docs_tree(
                     )
                 else:
                     confluence.create_page(
-                        space_key, title, storage_content, parent_id=folder_page_id
+                        space_key,
+                        title,
+                        storage_content,
+                        parent_id=folder_page_id,
                     )
         except Exception as exc:
             logger.error("Failed to sync '%s': %s", file_path, exc)
-
-    # ---- Delete removed files ----
-    if not removed:
-        return
-
-    logger.info("Processing %d removed markdown file(s) for deletion.", len(removed))
-
-    for file_path in sorted(removed):
-        parts = file_path.split("/")
-        filename = parts[-1]
-        dir_path = "/".join(parts[:-1])
-        folder_page_id = folder_ids.get(dir_path)
-
-        if not folder_page_id:
-            logger.warning("No folder page id computed for removed path '%s'; skipping.", file_path)
-            continue
-
-        title = derive_confluence_title(filename)
-
-        if title is None:
-            # README.md removal: do NOT delete folder pages; just clear content to avoid staleness.
-            page = confluence.get_page_by_id(folder_page_id)
-            if not page:
-                logger.warning("Folder page id=%s not found; cannot clear README removal for '%s'", folder_page_id, file_path)
-                continue
-
-            logger.info("README removed: clearing content of folder page '%s' (id=%s).", page["title"], folder_page_id)
-            try:
-                confluence.update_page(
-                    folder_page_id,
-                    page["title"],
-                    "<p></p>",
-                    page["version"]["number"],
-                )
-            except Exception as exc:
-                logger.error("Failed to clear folder page content for '%s': %s", file_path, exc)
-            continue
-
-        # Normal markdown file: delete the child page if it exists under the folder page.
-        try:
-            existing = confluence.get_page_by_title_under_parent(space_key, title, folder_page_id)
-            if not existing:
-                logger.info("Removed doc '%s' has no matching Confluence child page '%s' under parent %s; skipping.",
-                            file_path, title, folder_page_id)
-                continue
-
-            logger.info("Deleting Confluence page '%s' (id=%s) for removed doc '%s'.", title, existing["id"], file_path)
-            confluence.delete_page(existing["id"])
-        except Exception as exc:
-            logger.error("Failed to delete Confluence page for removed doc '%s': %s", file_path, exc)
 
 
 def should_run_sync_entry(sync_entry: dict, deployment: str) -> bool:
@@ -472,13 +411,17 @@ def should_run_sync_entry(sync_entry: dict, deployment: str) -> bool:
     return target == deployment
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main(config_path: str = "config.yml") -> None:
     config = load_config(config_path)
 
     github_token = os.environ.get("GITHUB_TOKEN")
     confluence_url = os.environ.get("CONFLUENCE_URL")
-    confluence_username = os.environ.get("CONFLUENCE_USERNAME")
-    confluence_api_token = os.environ.get("CONFLUENCE_API_TOKEN")
+    confluence_username = os.environ.get("CONFLUENCE_USERNAME") or ""
+    confluence_api_token = os.environ.get("CONFLUENCE_API_TOKEN") or ""
     confluence_bearer_token = os.environ.get("CONFLUENCE_BEARER_TOKEN")
 
     confluence_deployment = (os.environ.get("CONFLUENCE_DEPLOYMENT") or "cloud").strip().lower()
@@ -505,18 +448,13 @@ def main(config_path: str = "config.yml") -> None:
 
     confluence = ConfluenceClient(
         confluence_url,
-        confluence_username or "",
-        confluence_api_token or "",
+        confluence_username,
+        confluence_api_token,
         bearer_token=confluence_bearer_token,
     )
 
     changed_docs = read_changed_docs_from_env()
-    removed_docs = read_removed_docs_from_env()
-
-    if changed_docs:
-        logger.info("CHANGED_DOCS provided (%d path(s)).", len(changed_docs))
-    if removed_docs:
-        logger.info("REMOVED_DOCS provided (%d path(s)).", len(removed_docs))
+    logger.info("CHANGED_DOCS paths=%d", len(changed_docs))
 
     for sync_entry in config.get("sync", []):
         if not should_run_sync_entry(sync_entry, confluence_deployment):
@@ -529,7 +467,7 @@ def main(config_path: str = "config.yml") -> None:
         docs_root = sync_entry.get("docs_root")
 
         if docs_root is None:
-            logger.warning("Delete support is implemented for docs_root mode only; skipping non-docs_root entry.")
+            logger.warning("Changed-only mode is implemented for docs_root entries only; skipping non-docs_root entry.")
             continue
         if not parent_id:
             logger.error("confluence_parent_id is required when using docs_root; skipping entry.")
@@ -542,9 +480,8 @@ def main(config_path: str = "config.yml") -> None:
             github_branch,
             space_key,
             parent_id,
-            docs_root,
-            changed_paths=changed_docs,
-            removed_paths=removed_docs,
+            docs_root=docs_root,
+            only_paths=changed_docs if changed_docs else None,
         )
 
 
