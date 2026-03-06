@@ -10,5 +10,5 @@ sync:
     github_repo: Pinakin-Desai-HBK/docs-github-confluence
     github_branch: main
     confluence_space: ~7012154a1d7fe6fc046caa258571022be739e
-    confluence_parent_id: "98308"
+    confluence_parent_id: "65800"
     docs_root: Docs
