@@ -1,24 +1,38 @@
 # docs-github-confluence
 
-Automatically copy Markdown documents hosted on GitHub to Confluence and keep
-them up-to-date at regular intervals.
+Sync GitHub-hosted Markdown documentation into Confluence.
 
 ## How it works
 
-1. A YAML configuration file (`config.yml`) maps GitHub repository paths to
-   Confluence pages.
+1. A YAML configuration file (`config.yml`) defines what to sync (GitHub repo/branch/docs_root)
+   and where to sync it in Confluence (space key + parent page id).
 2. `sync_to_confluence.py` reads that configuration, fetches each document from
    the GitHub API, converts the Markdown to Confluence storage format, and then
    creates or updates the corresponding Confluence page.
 3. A GitHub Actions workflow (`.github/workflows/sync.yml`) runs the script on
-   a **cron schedule every 6 hours**, on every push to `main` that changes
-   anything under `Docs/**` or `config.yml`, and on demand via `workflow_dispatch`.
+   every push to `main` that changes anything under `Docs/**` or `config.yml`,
+   and on demand via `workflow_dispatch`.
 
-## Setup
+---
 
-### 1. Configure `config.yml`
+## Configuration (`config.yml`)
 
-Edit `config.yml` to point to your repositories and Confluence space.
+`config.yml` is still required, but it is intentionally **credentials-free**.
+
+- Put **sync mappings** in `config.yml` (what to sync + Confluence destination details).
+- Put **Confluence URL + credentials** in GitHub Actions **Secrets** (see below), which the
+  workflow exports as environment variables at runtime.
+
+Example:
+
+```yaml
+sync:
+  - github_repo: your-org/your-repo
+    github_branch: main
+    confluence_space: DOC # space key (not name)
+    confluence_parent_id: "405152300" # root landing page ID
+    docs_root: Docs # mirror everything under Docs/ into Confluence
+```
 
 Notes on `confluence_space`:
 
@@ -28,7 +42,7 @@ Notes on `confluence_space`:
 - If the space key is invalid or inaccessible, Confluence may return HTTP 404 with a
   message like `No space with key : DOC`.
 
-#### Tree-sync mode (recommended)
+### Tree-sync mode (recommended)
 
 Set `docs_root` to the folder you want to mirror. The script will discover all
 Markdown files recursively and recreate the directory structure as Confluence pages
@@ -39,74 +53,79 @@ nested under the page identified by `confluence_parent_id`.
   new child page. `Docs/README.md` updates the root page identified by
   `confluence_parent_id`; `Docs/<folder>/README.md` updates the `<folder>` page.
 
-```yaml
-confluence:
-  url: https://your-domain.atlassian.net
-  username: your-email@example.com
+### Legacy mode (explicit document list)
 
-sync:
-  - github_repo: your-org/your-repo
-    github_branch: main
-    confluence_space: DOC # or "~your-username" for a personal space (Data Center)
-    confluence_parent_id: "405152300" # ID of the root landing page (required)
-    docs_root: Docs # mirror everything under Docs/ into Confluence
-```
-
-#### Legacy mode (explicit document list)
-
-You can still list individual files explicitly:
+If you prefer specifying documents explicitly, use `documents` instead of `docs_root`:
 
 ```yaml
 sync:
   - github_repo: your-org/your-repo
     github_branch: main
     confluence_space: DOC
-    confluence_parent_id: "405152300" # optional parent page ID
+    confluence_parent_id: "405152300"
     documents:
-      - github_path: docs/README.md
-        confluence_title: "Project Overview"
-      - github_path: docs/installation.md
-        confluence_title: "Installation Guide"
+      - github_path: Docs/SomeDoc.md
+        confluence_title: SomeDoc
 ```
 
-### 2. Add repository secrets
+---
 
-Go to **Settings → Secrets and variables → Actions** and add:
+## GitHub Actions secrets (Hosted vs Cloud)
 
-| Secret                 | Description                                                                                                                   |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `CONFLUENCE_URL`       | Your Confluence base URL (Cloud or Data Center), e.g. `https://your-domain.atlassian.net` or `https://confluence.company.com` |
-| `CONFLUENCE_USERNAME`  | Your Atlassian account email                                                                                                  |
-| `CONFLUENCE_API_TOKEN` | Your API token / PAT (the script uses `Authorization: Bearer ...`)                                                            |
+This repo supports syncing to **two different Confluence deployments** with **separate**
+GitHub Actions secrets:
 
-`GITHUB_TOKEN` is provided automatically by GitHub Actions.
+- **Hosted (default)**: Confluence Data Center / Server (typically authenticated via Bearer token)
+- **Cloud**: Confluence Cloud (authenticated via Basic auth: email + API token)
 
-### 3. Run manually (optional)
+The workflow selects which one to use and maps the chosen secret set into the runtime
+environment variables that `sync_to_confluence.py` reads:
+
+- `CONFLUENCE_URL`
+- `CONFLUENCE_USERNAME`
+- `CONFLUENCE_API_TOKEN`
+- `CONFLUENCE_BEARER_TOKEN`
+
+### Required secrets
+
+**Hosted (default)**
+
+- `CONFLUENCE_HOSTED_URL`
+- `CONFLUENCE_HOSTED_BEARER_TOKEN`
+
+**Cloud**
+
+- `CONFLUENCE_CLOUD_URL` (e.g. `https://your-domain.atlassian.net`)
+- `CONFLUENCE_CLOUD_USERNAME` (your Atlassian email)
+- `CONFLUENCE_CLOUD_API_TOKEN` (Atlassian API token)
+
+**Common**
+
+- `GITHUB_TOKEN` (provided automatically by GitHub Actions as `${{ secrets.GITHUB_TOKEN }}`)
+
+### Selecting the target (workflow_dispatch)
+
+From the GitHub Actions tab, run **Sync GitHub Docs to Confluence** manually and choose:
+
+- `hosted` (default), or
+- `cloud`
+
+On normal pushes to `main`, the workflow defaults to **hosted**.
+
+---
+
+## Local runs (optional)
+
+You can run the sync script locally by setting:
+
+- `GITHUB_TOKEN`
+- `CONFLUENCE_URL`
+- and either:
+  - `CONFLUENCE_BEARER_TOKEN` (hosted), **or**
+  - `CONFLUENCE_USERNAME` + `CONFLUENCE_API_TOKEN` (cloud)
+
+Then run:
 
 ```bash
-pip install -r requirements.txt
-
-export GITHUB_TOKEN=...
-export CONFLUENCE_URL=https://your-domain.atlassian.net
-export CONFLUENCE_USERNAME=your-email@example.com
-export CONFLUENCE_API_TOKEN=...
-
 python sync_to_confluence.py
 ```
-
-## Running the tests
-
-```bash
-pip install -r requirements.txt pytest
-python -m pytest tests/ -v
-```
-
-## File overview
-
-| File                         | Purpose                                                  |
-| ---------------------------- | -------------------------------------------------------- |
-| `sync_to_confluence.py`      | Main sync script                                         |
-| `config.yml`                 | Configuration (repos, branches, space keys, page titles) |
-| `requirements.txt`           | Python dependencies                                      |
-| `.github/workflows/sync.yml` | Scheduled GitHub Actions workflow                        |
-| `tests/test_sync.py`         | Unit tests                                               |

@@ -131,19 +131,7 @@ _FENCED_CODE_RE = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
 
 
 def markdown_to_confluence(markdown_content: str) -> str:
-    """Convert markdown text to Confluence storage format (XHTML subset).
-
-    Pipeline:
-      1. Extract fenced code blocks → Confluence ``ac:structured-macro`` snippets
-         (stored aside so their content is never touched by later steps).
-      2. Normalize ``<br>`` variants to a placeholder (``html=False`` below would
-         otherwise escape them as ``&lt;br&gt;``).
-      3. Render markdown with *markdown-it-py* (GFM-like: tables, strikethrough,
-         task lists) with ``html=False`` so all raw inline HTML is escaped.
-      4. Sanitize with *bleach* (allowlist-based; escapes unknown tags).
-      5. Serialize as well-formed XHTML via *lxml* (void elements self-close, etc.).
-      6. Restore ``<br/>`` and the Confluence code macros.
-    """
+    """Convert markdown text to Confluence storage format (XHTML subset)."""
     macros: list[str] = []
 
     def _extract_code_block(match: re.Match) -> str:
@@ -197,23 +185,51 @@ def markdown_to_confluence(markdown_content: str) -> str:
 class ConfluenceClient:
     """Thin wrapper around the Confluence REST API."""
 
-    def __init__(self, base_url: str, username: str, api_token: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        api_token: str,
+        bearer_token: Optional[str] = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.auth = None
+
+        # Auth:
+        # - Confluence Cloud: Basic auth (email + API token)
+        # - Some Data Center/Server setups: Bearer token
+        # Auto: use bearer if provided, else basic.
+        self._bearer_token = (bearer_token or "").strip() or None
+        self._basic_auth = (username, api_token) if (username and api_token) else None
+
         self.headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {api_token}",
         }
+        if self._bearer_token:
+            self.headers["Authorization"] = f"Bearer {self._bearer_token}"
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        json: Optional[dict] = None,
+    ) -> requests.Response:
+        url = f"{self.base_url}{path}"
+        auth = None if self._bearer_token else self._basic_auth
+        return requests.request(
+            method,
+            url,
+            headers=self.headers,
+            params=params,
+            json=json,
+            auth=auth,
+            timeout=30,
+        )
 
     def _parse_json_response(self, response: requests.Response, method: str, url: str) -> dict:
-        """Parse a Confluence API response as JSON.
-
-        Raises a descriptive :class:`ValueError` when the response body is not
-        JSON (e.g. an HTML SSO/login page) so callers see a clear, actionable
-        message instead of a bare ``JSONDecodeError``.  Authorization headers
-        and tokens are intentionally excluded from the log output.
-        """
+        """Parse a Confluence API response as JSON with descriptive errors."""
         content_type = response.headers.get("Content-Type", "")
         body_prefix = response.text[:500]
         if "application/json" not in content_type:
@@ -222,7 +238,9 @@ class ConfluenceClient:
                 f"[{method} {url} -> HTTP {response.status_code}, "
                 f"Content-Type: {content_type!r}]. "
                 f"Body prefix: {body_prefix!r}. "
-                f"This may indicate an SSO/login redirect — check CONFLUENCE_URL and credentials."
+                f"This may indicate an SSO/login redirect or wrong auth method. "
+                f"If using Confluence Cloud, ensure Basic auth via CONFLUENCE_USERNAME (email) "
+                f"+ CONFLUENCE_API_TOKEN. If using Bearer, set CONFLUENCE_BEARER_TOKEN."
             )
         try:
             return response.json()
@@ -236,14 +254,11 @@ class ConfluenceClient:
 
     def get_page_by_title(self, space_key: str, title: str) -> Optional[dict]:
         """Return a page dict (including version) if *title* exists in *space_key*, else None."""
-        url = f"{self.base_url}/rest/api/content"
+        path = "/rest/api/content"
         params = {"spaceKey": space_key, "title": title, "expand": "version"}
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        response = self._request("GET", path, params=params)
 
-        # Confluence often returns useful JSON error bodies even on non-2xx responses,
-        # especially for 404 cases in Confluence Data Center ("No space with key ...").
-        # Parse JSON first so we can provide actionable errors.
-        data = self._parse_json_response(response, "GET", url)
+        data = self._parse_json_response(response, "GET", f"{self.base_url}{path}")
 
         if response.status_code == 404:
             message = str(data.get("message", "") or "")
@@ -255,14 +270,13 @@ class ConfluenceClient:
                     "(personal spaces are often like '~username'). "
                     f"Confluence message: {message}"
                 )
-            # Treat other 404s as "page not found"
             return None
 
         if response.status_code >= 400:
             message = str(data.get("message", "") or "")
             raise ValueError(
                 "Confluence request failed "
-                f"[GET {url} -> HTTP {response.status_code}]. "
+                f"[GET {self.base_url}{path} -> HTTP {response.status_code}]. "
                 f"Message: {message}"
             )
 
@@ -272,13 +286,8 @@ class ConfluenceClient:
     def get_page_by_title_under_parent(
         self, space_key: str, title: str, parent_id: str
     ) -> Optional[dict]:
-        """Return a page dict if *title* exists as a direct child of *parent_id*, else None.
-
-        Uses CQL to restrict the search to pages whose immediate parent is
-        *parent_id*, avoiding false matches from same-titled pages elsewhere
-        in the space.
-        """
-        url = f"{self.base_url}/rest/api/content/search"
+        """Return a page dict if *title* exists as a direct child of *parent_id*, else None."""
+        path = "/rest/api/content/search"
         safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
         safe_space = space_key.replace("\\", "\\\\").replace('"', '\\"')
         cql = (
@@ -286,8 +295,8 @@ class ConfluenceClient:
             f' AND space = "{safe_space}" AND type = page'
         )
         params = {"cql": cql, "expand": "version"}
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
-        data = self._parse_json_response(response, "GET", url)
+        response = self._request("GET", path, params=params)
+        data = self._parse_json_response(response, "GET", f"{self.base_url}{path}")
         if response.status_code >= 400:
             return None
         results = data.get("results", [])
@@ -295,12 +304,12 @@ class ConfluenceClient:
 
     def get_page_by_id(self, page_id: str) -> Optional[dict]:
         """Return a page dict (with version and title) for *page_id*, or None if not found."""
-        url = f"{self.base_url}/rest/api/content/{page_id}"
+        path = f"/rest/api/content/{page_id}"
         params = {"expand": "version"}
-        response = requests.get(url, headers=self.headers, params=params, timeout=30)
+        response = self._request("GET", path, params=params)
         if response.status_code == 404:
             return None
-        data = self._parse_json_response(response, "GET", url)
+        data = self._parse_json_response(response, "GET", f"{self.base_url}{path}")
         if response.status_code >= 400:
             return None
         return data
@@ -313,7 +322,7 @@ class ConfluenceClient:
         parent_id: Optional[str] = None,
     ) -> dict:
         """Create a new page and return the response JSON."""
-        url = f"{self.base_url}/rest/api/content"
+        path = "/rest/api/content"
         body: dict = {
             "type": "page",
             "title": title,
@@ -322,34 +331,35 @@ class ConfluenceClient:
         }
         if parent_id:
             body["ancestors"] = [{"id": parent_id}]
-        response = requests.post(url, headers=self.headers, json=body, timeout=30)
+        response = self._request("POST", path, json=body)
         if not response.ok:
             logger.error(
                 "Confluence API error [POST %s] status=%d title=%r parent_id=%r body=%s",
-                url, response.status_code, title, parent_id, response.text[:500],
+                f"{self.base_url}{path}", response.status_code, title, parent_id, response.text[:500],
             )
         response.raise_for_status()
-        return self._parse_json_response(response, "POST", url)
+        return self._parse_json_response(response, "POST", f"{self.base_url}{path}")
 
     def update_page(
         self, page_id: str, title: str, content: str, current_version: int
     ) -> dict:
         """Update an existing page to *current_version + 1* and return the response JSON."""
-        url = f"{self.base_url}/rest/api/content/{page_id}"
+        path = f"/rest/api/content/{page_id}"
         body = {
             "type": "page",
             "title": title,
             "version": {"number": current_version + 1},
             "body": {"storage": {"value": content, "representation": "storage"}},
         }
-        response = requests.put(url, headers=self.headers, json=body, timeout=30)
+        response = self._request("PUT", path, json=body)
         if not response.ok:
             logger.error(
                 "Confluence API error [PUT %s] status=%d title=%r page_id=%r body=%s",
-                url, response.status_code, title, page_id, response.text[:500],
+                f"{self.base_url}{path}", response.status_code, title, page_id, response.text[:500],
             )
         response.raise_for_status()
-        return self._parse_json_response(response, "PUT", url)
+        return self._parse_json_response(response, "PUT", f"{self.base_url}{path}")
+
 
 # ---------------------------------------------------------------------------
 # Sync logic
@@ -374,6 +384,7 @@ def sync_document(
         logger.info("Creating page '%s'", title)
         result = confluence.create_page(space_key, title, content, parent_id)
         logger.info("Created page '%s' (id=%s)", title, result["id"])
+
 
 def normalize_github_repo(repo: str) -> str:
     repo = repo.strip()
@@ -413,15 +424,7 @@ def sync_docs_tree(
     root_parent_id: str,
     docs_root: str = "Docs",
 ) -> None:
-    """Mirror all Markdown files under *docs_root* into Confluence.
-
-    Folder structure is preserved by creating (or reusing) a Confluence page
-    for each directory, nested under *root_parent_id*.  ``README.md`` files
-    act as the content for their enclosing folder page (or the root parent
-    page for ``Docs/README.md``).  All other ``.md`` files become child pages
-    of their folder page, titled by filename without extension.
-    """
-    # Preflight: verify the configured root parent page exists and is accessible.
+    """Mirror all Markdown files under *docs_root* into Confluence."""
     parent_page = confluence.get_page_by_id(root_parent_id)
     if parent_page is None:
         raise ValueError(
@@ -432,7 +435,6 @@ def sync_docs_tree(
             "or insufficient permissions."
         )
 
-    # Optional: warn if the root parent page belongs to a different space.
     page_space_key = parent_page.get("space", {}).get("key", "")
     if page_space_key and page_space_key != space_key:
         logger.warning(
@@ -445,8 +447,6 @@ def sync_docs_tree(
 
     md_files = list_github_docs(github_token, github_repo, github_branch, docs_root)
 
-    # Mapping from repository directory path → Confluence page ID.
-    # The docs_root directory itself is represented by root_parent_id.
     folder_ids: dict[str, str] = {docs_root: root_parent_id}
 
     for file_path in sorted(md_files):
@@ -454,7 +454,6 @@ def sync_docs_tree(
         filename = parts[-1]
         dir_path = "/".join(parts[:-1])
 
-        # Ensure every intermediate folder page exists.
         current_path = docs_root
         for folder in parts[1:-1]:
             next_path = f"{current_path}/{folder}"
@@ -467,9 +466,7 @@ def sync_docs_tree(
         folder_page_id = folder_ids[dir_path]
         title = derive_confluence_title(filename)
 
-        logger.info(
-            "Syncing '%s' from %s@%s", file_path, github_repo, github_branch
-        )
+        logger.info("Syncing '%s' from %s@%s", file_path, github_repo, github_branch)
         try:
             markdown = get_github_file_content(
                 github_token, github_repo, file_path, github_branch
@@ -477,7 +474,6 @@ def sync_docs_tree(
             storage_content = markdown_to_confluence(markdown)
 
             if title is None:
-                # README.md → update the folder page (or root parent) itself.
                 page = confluence.get_page_by_id(folder_page_id)
                 if page:
                     logger.info(
@@ -498,14 +494,11 @@ def sync_docs_tree(
                         file_path,
                     )
             else:
-                # Normal file → find/create as a child of the folder page.
                 existing = confluence.get_page_by_title_under_parent(
                     space_key, title, folder_page_id
                 )
                 if existing:
-                    logger.info(
-                        "Updating page '%s' (id=%s)", title, existing["id"]
-                    )
+                    logger.info("Updating page '%s' (id=%s)", title, existing["id"])
                     confluence.update_page(
                         existing["id"],
                         title,
@@ -521,6 +514,18 @@ def sync_docs_tree(
         except Exception as exc:
             logger.error("Failed to sync '%s': %s", file_path, exc)
 
+
+def should_run_sync_entry(sync_entry: dict, deployment: str) -> bool:
+    """Return True if sync_entry should run for this deployment.
+
+    If sync_entry has no 'target', it runs for all deployments (backwards compatible).
+    """
+    target = str(sync_entry.get("target", "") or "").strip().lower()
+    if not target:
+        return True
+    return target == deployment
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -533,17 +538,30 @@ def main(config_path: str = "config.yml") -> None:
     confluence_url = os.environ.get("CONFLUENCE_URL") or config.get("confluence", {}).get("url")
     confluence_username = os.environ.get("CONFLUENCE_USERNAME") or config.get("confluence", {}).get("username")
     confluence_api_token = os.environ.get("CONFLUENCE_API_TOKEN")
+    confluence_bearer_token = os.environ.get("CONFLUENCE_BEARER_TOKEN")
+
+    confluence_deployment = (os.environ.get("CONFLUENCE_DEPLOYMENT") or "hosted").strip().lower()
+    if confluence_deployment not in ("hosted", "cloud"):
+        logger.error(
+            "Invalid CONFLUENCE_DEPLOYMENT=%r (expected 'hosted' or 'cloud').",
+            confluence_deployment,
+        )
+        sys.exit(1)
+
+    has_bearer = bool((confluence_bearer_token or "").strip())
+    has_basic = bool(confluence_username and confluence_api_token)
 
     missing = [
         name
         for name, val in [
             ("GITHUB_TOKEN", github_token),
             ("CONFLUENCE_URL", confluence_url),
-            ("CONFLUENCE_USERNAME", confluence_username),
-            ("CONFLUENCE_API_TOKEN", confluence_api_token),
         ]
         if not val
     ]
+    if not (has_bearer or has_basic):
+        missing.append("CONFLUENCE_BEARER_TOKEN or (CONFLUENCE_USERNAME + CONFLUENCE_API_TOKEN)")
+
     if missing:
         logger.error(
             "Missing required credentials: %s. "
@@ -552,9 +570,17 @@ def main(config_path: str = "config.yml") -> None:
         )
         sys.exit(1)
 
-    confluence = ConfluenceClient(confluence_url, confluence_username, confluence_api_token)
+    confluence = ConfluenceClient(
+        confluence_url,
+        confluence_username or "",
+        confluence_api_token or "",
+        bearer_token=confluence_bearer_token,
+    )
 
     for sync_entry in config.get("sync", []):
+        if not should_run_sync_entry(sync_entry, confluence_deployment):
+            continue
+
         github_repo = normalize_github_repo(sync_entry["github_repo"])
         github_branch = sync_entry.get("github_branch", "main")
         space_key = sync_entry["confluence_space"]
@@ -562,12 +588,10 @@ def main(config_path: str = "config.yml") -> None:
 
         docs_root = sync_entry.get("docs_root")
         if docs_root is not None:
-            # Tree-sync mode: mirror all Markdown under docs_root into Confluence.
             if not parent_id:
-                logger.error(
-                    "confluence_parent_id is required when using docs_root; skipping entry."
-                )
+                logger.error("confluence_parent_id is required when using docs_root; skipping entry.")
                 continue
+
             logger.info(
                 "Syncing Docs tree '%s' from %s@%s → Confluence space %s (parent %s)",
                 docs_root,

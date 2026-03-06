@@ -1,13 +1,14 @@
-# sync:
-#   - github_repo: Pinakin-Desai-HBK/docs-github-confluence
-#     github_branch: main # branch to read documents from
-#     confluence_space: NCODESPACE # Confluence space key
-#     confluence_parent_id: "405152274" # ID of the root landing page (required for docs_root)
-#     docs_root: Docs # mirror everything under Docs/ into Confluence
-
 sync:
-  - github_repo: Pinakin-Desai-HBK/docs-github-confluence
-    github_branch: main # branch to read documents from
-    confluence_space: ~7012154a1d7fe6fc046caa258571022be739e # Confluence space key
-    confluence_parent_id: "98308" # ID of the root landing page (required for docs_root)
-    docs_root: Docs # mirror everything under Docs/ into Confluence
+  - target: hosted
+    github_repo: Pinakin-Desai-HBK/docs-github-confluence
+    github_branch: main
+    confluence_space: NCODESPACE
+    confluence_parent_id: "405152274"
+    docs_root: Docs
+
+  - target: cloud
+    github_repo: Pinakin-Desai-HBK/docs-github-confluence
+    github_branch: main
+    confluence_space: ~7012154a1d7fe6fc046caa258571022be739e
+    confluence_parent_id: "98308"
+    docs_root: Docs

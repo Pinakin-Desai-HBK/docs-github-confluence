@@ -1,7 +1,6 @@
 name: Sync GitHub Docs to Confluence
 
 on:
-  # Run whenever there's a push to main that touches Docs/ or config
   push:
     branches:
       - main
@@ -9,8 +8,16 @@ on:
       - "Docs/**"
       - "config.yml"
 
-  # Allow ad-hoc runs from the Actions tab
   workflow_dispatch:
+    inputs:
+      confluence_deployment:
+        description: "Which Confluence to target: hosted or cloud"
+        required: false
+        default: "hosted"
+        type: choice
+        options:
+          - hosted
+          - cloud
 
 jobs:
   sync:
@@ -29,10 +36,48 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Decide target deployment (hosted/cloud) and export the right secrets
+      - name: Select Confluence secrets (hosted vs cloud)
+        shell: bash
+        env:
+          # Allow manual override on workflow_dispatch, else default to hosted
+          INPUT_DEPLOYMENT: ${{ inputs.confluence_deployment }}
+          # Cloud secrets
+          CONFLUENCE_CLOUD_URL: ${{ secrets.CONFLUENCE_CLOUD_URL }}
+          CONFLUENCE_CLOUD_USERNAME: ${{ secrets.CONFLUENCE_CLOUD_USERNAME }}
+          CONFLUENCE_CLOUD_API_TOKEN: ${{ secrets.CONFLUENCE_CLOUD_API_TOKEN }}
+          # Hosted/DC secrets
+          CONFLUENCE_HOSTED_URL: ${{ secrets.CONFLUENCE_HOSTED_URL }}
+          CONFLUENCE_HOSTED_BEARER_TOKEN: ${{ secrets.CONFLUENCE_HOSTED_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          DEPLOYMENT="${INPUT_DEPLOYMENT:-hosted}"
+          if [[ -z "$DEPLOYMENT" ]]; then
+            DEPLOYMENT="hosted"
+          fi
+
+          if [[ "$DEPLOYMENT" != "cloud" && "$DEPLOYMENT" != "hosted" ]]; then
+            echo "Invalid CONFLUENCE deployment: '$DEPLOYMENT' (expected hosted|cloud)" >&2
+            exit 1
+          fi
+
+          echo "CONFLUENCE_DEPLOYMENT=$DEPLOYMENT" >> "$GITHUB_ENV"
+
+          if [[ "$DEPLOYMENT" == "cloud" ]]; then
+            echo "CONFLUENCE_URL=$CONFLUENCE_CLOUD_URL" >> "$GITHUB_ENV"
+            echo "CONFLUENCE_USERNAME=$CONFLUENCE_CLOUD_USERNAME" >> "$GITHUB_ENV"
+            echo "CONFLUENCE_API_TOKEN=$CONFLUENCE_CLOUD_API_TOKEN" >> "$GITHUB_ENV"
+            echo "CONFLUENCE_BEARER_TOKEN=" >> "$GITHUB_ENV"
+          else
+            echo "CONFLUENCE_URL=$CONFLUENCE_HOSTED_URL" >> "$GITHUB_ENV"
+            echo "CONFLUENCE_USERNAME=" >> "$GITHUB_ENV"
+            echo "CONFLUENCE_API_TOKEN=" >> "$GITHUB_ENV"
+            echo "CONFLUENCE_BEARER_TOKEN=$CONFLUENCE_HOSTED_BEARER_TOKEN" >> "$GITHUB_ENV"
+          fi
+
       - name: Sync docs to Confluence
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONFLUENCE_URL: ${{ secrets.CONFLUENCE_URL }}
-          CONFLUENCE_USERNAME: ${{ secrets.CONFLUENCE_USERNAME }}
-          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          # CONFLUENCE_* are populated via $GITHUB_ENV in the previous step
         run: python sync_to_confluence.py
