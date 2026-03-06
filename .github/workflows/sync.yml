@@ -18,6 +18,11 @@ on:
         options:
           - hosted
           - cloud
+      diff_base:
+        description: "Git ref/SHA to diff against for changed-only sync (e.g. origin/main, a tag, or a commit SHA)"
+        required: false
+        default: "origin/main"
+        type: string
 
 jobs:
   sync:
@@ -27,6 +32,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,11 +43,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Decide target deployment (hosted/cloud) and export the right secrets
       - name: Select Confluence secrets (hosted vs cloud)
         shell: bash
         env:
-          # Allow manual override on workflow_dispatch, else default to cloud
           INPUT_DEPLOYMENT: ${{ inputs.confluence_deployment }}
           # Cloud secrets
           CONFLUENCE_CLOUD_URL: ${{ secrets.CONFLUENCE_CLOUD_URL }}
@@ -76,8 +81,95 @@ jobs:
             echo "CONFLUENCE_BEARER_TOKEN=$CONFLUENCE_HOSTED_BEARER_TOKEN" >> "$GITHUB_ENV"
           fi
 
-      - name: Sync docs to Confluence
+      - name: Compute changed docs (push)
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import json, os
+
+          with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as f:
+            evt = json.load(f)
+
+          changed = []
+          removed = []
+
+          for c in evt.get("commits", []):
+            for k in ("added", "modified"):
+              changed.extend(c.get(k, []))
+            removed.extend(c.get("removed", []))
+
+          def uniq_keep_order(xs):
+            seen = set()
+            out = []
+            for x in xs:
+              if x not in seen:
+                out.append(x)
+                seen.add(x)
+            return out
+
+          changed = uniq_keep_order(changed)
+          removed = uniq_keep_order(removed)
+
+          changed = [p for p in changed if p.startswith("Docs/") and p.lower().endswith(".md")]
+          removed = [p for p in removed if p.startswith("Docs/") and p.lower().endswith(".md")]
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write("CHANGED_DOCS<<EOF\n")
+            f.write("\n".join(changed) + "\n")
+            f.write("EOF\n")
+            f.write("REMOVED_DOCS<<EOF\n")
+            f.write("\n".join(removed) + "\n")
+            f.write("EOF\n")
+
+          print(f"Changed docs (push) count: {len(changed)}")
+          for p in changed:
+            print(f"- {p}")
+          print(f"Removed docs (push) count: {len(removed)}")
+          for p in removed:
+            print(f"- {p}")
+          PY
+
+      - name: Compute changed/removed docs (workflow_dispatch diff)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        env:
+          DIFF_BASE: ${{ inputs.diff_base }}
+        run: |
+          set -euo pipefail
+
+          BASE="${DIFF_BASE:-origin/main}"
+          if [[ -z "$BASE" ]]; then
+            BASE="origin/main"
+          fi
+
+          git fetch --all --tags --prune
+
+          if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+            echo "diff_base '$BASE' is not a valid ref in this checkout." >&2
+            echo "Try: origin/main, a tag, or a commit SHA." >&2
+            exit 1
+          fi
+
+          CHANGED="$(git diff --name-only --diff-filter=AM "$BASE"...HEAD -- 'Docs/**/*.md' || true)"
+          REMOVED="$(git diff --name-only --diff-filter=D "$BASE"...HEAD -- 'Docs/**/*.md' || true)"
+
+          echo "Changed docs (dispatch) base=$BASE count=$(echo "$CHANGED" | sed '/^\s*$/d' | wc -l | tr -d ' ')"
+          echo "$CHANGED"
+          echo "Removed docs (dispatch) base=$BASE count=$(echo "$REMOVED" | sed '/^\s*$/d' | wc -l | tr -d ' ')"
+          echo "$REMOVED"
+
+          {
+            echo "CHANGED_DOCS<<EOF"
+            echo "$CHANGED"
+            echo "EOF"
+            echo "REMOVED_DOCS<<EOF"
+            echo "$REMOVED"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Sync docs to Confluence (changed-only + delete removed)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # CONFLUENCE_* are populated via $GITHUB_ENV in the previous step
         run: python sync_to_confluence.py
