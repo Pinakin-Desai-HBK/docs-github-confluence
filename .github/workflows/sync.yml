@@ -13,7 +13,7 @@ on:
       confluence_deployment:
         description: "Which Confluence to target: hosted or cloud"
         required: false
-        default: "hosted"
+        default: "cloud"
         type: choice
         options:
           - hosted
@@ -40,7 +40,7 @@ jobs:
       - name: Select Confluence secrets (hosted vs cloud)
         shell: bash
         env:
-          # Allow manual override on workflow_dispatch, else default to hosted
+          # Allow manual override on workflow_dispatch, else default to cloud
           INPUT_DEPLOYMENT: ${{ inputs.confluence_deployment }}
           # Cloud secrets
           CONFLUENCE_CLOUD_URL: ${{ secrets.CONFLUENCE_CLOUD_URL }}
@@ -52,9 +52,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          DEPLOYMENT="${INPUT_DEPLOYMENT:-hosted}"
+          DEPLOYMENT="${INPUT_DEPLOYMENT:-cloud}"
           if [[ -z "$DEPLOYMENT" ]]; then
-            DEPLOYMENT="hosted"
+            DEPLOYMENT="cloud"
           fi
 
           if [[ "$DEPLOYMENT" != "cloud" && "$DEPLOYMENT" != "hosted" ]]; then
